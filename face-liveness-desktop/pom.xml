@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.mosip.extensions</groupId>
+    <artifactId>face-liveness-desktop</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Face Liveness Desktop Adapter</name>
+
+    <properties>
+        <!-- Matches the current MOSIP Registration Client build baseline. -->
+        <maven.compiler.release>11</maven.compiler.release>
+        <spring.framework.version>5.0.6.RELEASE</spring.framework.version>
+        <openjfx.version>11.0.2</openjfx.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <modules>
+        <module>liveness-api</module>
+        <module>liveness-core</module>
+        <module>mds-adapter</module>
+        <module>desktop-companion-ui</module>
+        <module>distribution</module>
+    </modules>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.0</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>io.mosip.extensions</groupId>
+        <artifactId>face-liveness-desktop</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>distribution</artifactId>
+    <name>Face Liveness Desktop Distribution</name>
+    <dependencies>
+        <dependency>
+            <groupId>io.mosip.extensions</groupId>
+            <artifactId>mds-adapter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.mosip.extensions</groupId>
+            <artifactId>desktop-companion-ui</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+</project>

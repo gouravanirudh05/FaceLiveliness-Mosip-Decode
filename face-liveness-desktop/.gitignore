@@ -1,0 +1,87 @@
+# Build outputs
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+*.ear
+
+# Maven wrapper/cache artifacts
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Java crash/error output
+hs_err_pid*
+replay_pid*
+*.hprof
+
+# IDE/editor files
+.idea/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+.factorypath
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs, runtime state, and temporary files
+*.log
+logs/
+runtime/
+data/
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# Local vision-model binaries and their runtime caches.
+# Keep the tracked distribution/models/.gitkeep placeholder.
+distribution/models/*.onnx
+distribution/models/*.ort
+distribution/models/*.engine
+distribution/models/*.tflite
+distribution/models/*.bin
+distribution/models/*.pt
+distribution/models/*.pth
+distribution/models/*.pb
+distribution/models/cache/
+
+# Local vendor SDKs, native libraries, and packaged installers.
+# Use documented dependency repositories or secure deployment tooling instead.
+vendor/
+native/
+distribution/lib/
+distribution/plugins/
+distribution/packages/
+distribution/*.zip
+distribution/*.tar
+distribution/*.tar.gz
+distribution/*.msi
+distribution/*.exe
+
+# Machine- or environment-specific configuration and secrets.
+# application.properties remains the checked-in template.
+distribution/src/main/resources/application-local.properties
+distribution/src/main/resources/application-dev.properties
+distribution/src/main/resources/application-prod.properties
+distribution/src/main/resources/*.secret.properties
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example
