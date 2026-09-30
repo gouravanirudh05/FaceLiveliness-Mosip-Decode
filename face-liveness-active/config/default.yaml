@@ -1,0 +1,70 @@
+# Active face liveness configuration.
+# Relative paths are resolved against the directory containing this file.
+
+service:
+  host: 127.0.0.1          # same-machine companion to the Registration Client
+  port: 50051
+  max_workers: 4           # concurrent gRPC sessions
+  model_path: ../models/face_landmarker.task
+  input_mirrored: false    # true if the device delivers selfie-mirrored frames
+  max_faces: 2             # detect up to this many faces so "multiple faces" can be reported
+
+# Default policy, applied to every workflow unless overridden under `workflows`.
+policy:
+  enabled: true
+  # Base sequence is EASY -> MEDIUM -> HARD; values above 3 add further HARD steps.
+  min_challenges: 3
+  challenge_pool:
+    - blink
+    - smile
+    - open_mouth
+    - turn_left
+    - turn_right
+    - look_up
+    - look_down
+    - nod
+    - gaze_left
+    - gaze_right
+    - gaze_up
+    - gaze_down
+  # HARD steps may also be a pair of EASY/MEDIUM actions performed in order.
+  compound_challenges: true
+  # Retries after the first attempt (3 => up to 4 attempts). Each retry starts one tier harder.
+  max_retries: 3
+  # Strictness per step position: step N uses entry N, later steps reuse the last entry.
+  steps:
+    - { timeout_s: 8, yaw_deg: 15, pitch_deg: 10 }
+    - { timeout_s: 6, yaw_deg: 20, pitch_deg: 12 }
+    - { timeout_s: 5, yaw_deg: 25, pitch_deg: 15 }
+  escalation:
+    passive_weak_threshold: 0.5
+    # Used when no passive score is supplied. 0.0 treats "no passive evidence" as weak,
+    # which adds one HARD challenge.
+    default_passive_score: 0.0
+    weak_margin: 0.15
+    max_extra_challenges: 2
+  thresholds:
+    blink_closed: 0.5
+    blink_open: 0.2
+    smile: 0.5
+    smile_neutral: 0.3
+    mouth_open: 0.4
+    mouth_neutral: 0.15
+    gaze_horizontal: 0.15
+    gaze_vertical: 0.3
+    head_still_deg: 8
+    stability_deg: 3
+    stability_gaze: 0.05
+    nod_return_ratio: 0.5
+    hold_frames: 3
+    neutral_frames: 3
+    max_invalid_frames: 3
+
+# Per-workflow overrides, deep-merged over `policy`. Example:
+#   supervisor:
+#     min_challenges: 4
+#     max_retries: 1
+workflows:
+  resident: {}
+  operator: {}
+  supervisor: {}

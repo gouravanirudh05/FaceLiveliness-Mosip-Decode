@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "active-liveness"
+version = "0.1.0"
+description = "Active face liveness (challenge-response) for the MOSIP Registration Client, built on MediaPipe FaceLandmarker."
+requires-python = ">=3.12"
+dependencies = [
+    "mediapipe==1.0.1",
+    "numpy",
+    "opencv-contrib-python",
+    "grpcio==1.84.0",
+    "protobuf",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "grpcio-tools==1.84.0"]
+
+[project.scripts]
+active-liveness-server = "active_liveness.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

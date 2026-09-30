@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+// Active face liveness service. One bidirectional stream == one liveness session.
+//
+// Client -> server:  StartSession first, then Frames; Retry after RetryAvailable; Cancel at any time.
+// Server -> client:  SessionStarted, ChallengePrompt, Feedback, ChallengeResult,
+//                    RetryAvailable, and exactly one Decision, after which the server closes the stream.
+//                    Error reports a problem with a client message; the session continues unless
+//                    a Decision follows.
+package mosip.liveness.active.v1;
+
+option java_multiple_files = true;
+option java_package = "io.mosip.extensions.liveness.active.grpc";
+
+service ActiveLivenessService {
+  rpc RunSession(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// ------------------------------------------------------------------ client messages
+
+enum Workflow {
+  WORKFLOW_UNSPECIFIED = 0;
+  WORKFLOW_RESIDENT = 1;
+  WORKFLOW_OPERATOR = 2;
+  WORKFLOW_SUPERVISOR = 3;
+}
+
+message StartSession {
+  Workflow workflow = 1;
+  // Passive liveness score in [0, 1], if a passive engine ran first. A low score
+  // makes the challenge sequence harder. Absent => configured default is used.
+  optional double passive_score = 2;
+}
+
+enum FrameEncoding {
+  FRAME_ENCODING_UNSPECIFIED = 0;
+  FRAME_ENCODING_JPEG = 1;
+  FRAME_ENCODING_PNG = 2;
+  FRAME_ENCODING_RAW_RGB = 3;   // width * height * 3 bytes, row-major
+  FRAME_ENCODING_RAW_BGR = 4;
+}
+
+message Frame {
+  bytes data = 1;
+  FrameEncoding encoding = 2;
+  uint32 width = 3;             // required for RAW_* encodings
+  uint32 height = 4;
+  int64 timestamp_ms = 5;       // capture time; must strictly increase within a session
+}
+
+message Retry {}
+message Cancel {}
+
+message ClientMessage {
+  oneof payload {
+    StartSession start = 1;
+    Frame frame = 2;
+    Retry retry = 3;
+    Cancel cancel = 4;
+  }
+}
+
+// ------------------------------------------------------------------ server messages
+
+enum Tier {
+  TIER_UNSPECIFIED = 0;
+  TIER_EASY = 1;
+  TIER_MEDIUM = 2;
+  TIER_HARD = 3;
+}
+
+// Directions are from the subject's point of view.
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_BLINK = 1;
+  ACTION_SMILE = 2;
+  ACTION_OPEN_MOUTH = 3;
+  ACTION_TURN_LEFT = 4;
+  ACTION_TURN_RIGHT = 5;
+  ACTION_LOOK_UP = 6;
+  ACTION_LOOK_DOWN = 7;
+  ACTION_NOD = 8;
+  ACTION_GAZE_LEFT = 9;
+  ACTION_GAZE_RIGHT = 10;
+  ACTION_GAZE_UP = 11;
+  ACTION_GAZE_DOWN = 12;
+}
+
+enum FeedbackCode {
+  FEEDBACK_CODE_UNSPECIFIED = 0;
+  FEEDBACK_FACE_NOT_DETECTED = 1;
+  FEEDBACK_MULTIPLE_FACES = 2;
+  FEEDBACK_HOLD_STILL = 3;
+  FEEDBACK_KEEP_HEAD_STILL = 4;
+  FEEDBACK_PLEASE_CONTINUE = 5;
+  FEEDBACK_ACTION_DETECTED = 6;
+  FEEDBACK_INVALID_FRAME = 7;
+}
+
+enum FailureReason {
+  FAILURE_REASON_UNSPECIFIED = 0;
+  FAILURE_CHALLENGE_TIMEOUT = 1;
+  FAILURE_WRONG_ACTION = 2;
+  FAILURE_MAX_RETRIES_EXCEEDED = 3;
+  FAILURE_CANCELLED = 4;
+  FAILURE_ENGINE_ERROR = 5;
+  FAILURE_LIVENESS_DISABLED = 6;
+}
+
+enum DecisionStatus {
+  DECISION_STATUS_UNSPECIFIED = 0;
+  DECISION_PASSED = 1;
+  DECISION_FAILED = 2;
+  DECISION_CANCELLED = 3;
+  DECISION_DISABLED = 4;        // liveness switched off for this workflow by configuration
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_INVALID_REQUEST = 1;    // message not valid in the current session state
+  ERROR_INVALID_FRAME = 2;      // frame could not be decoded; the frame is ignored
+}
+
+message SessionStarted {
+  string session_id = 1;
+  Workflow workflow = 2;
+  int32 max_attempts = 3;
+}
+
+message ChallengePrompt {
+  int32 attempt = 1;            // 1-based
+  int32 step_index = 2;         // 0-based
+  int32 total_steps = 3;        // may grow if escalation adds a step
+  repeated Action actions = 4;  // more than one => perform in this order
+  Tier tier = 5;
+  string prompt = 6;
+  int64 timeout_ms = 7;
+}
+
+message Feedback {
+  FeedbackCode code = 1;
+  string message = 2;
+  float progress = 3;           // 0..1 for the current step
+}
+
+message ChallengeResult {
+  int32 attempt = 1;
+  int32 step_index = 2;
+  bool passed = 3;
+  float margin = 4;
+  FailureReason reason = 5;
+}
+
+message RetryAvailable {
+  int32 attempt = 1;
+  int32 retries_remaining = 2;
+  FailureReason reason = 3;
+  string message = 4;
+  repeated string guidance = 5;
+}
+
+message Decision {
+  DecisionStatus status = 1;
+  FailureReason reason = 2;
+  string message = 3;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+message ServerMessage {
+  oneof payload {
+    SessionStarted session_started = 1;
+    ChallengePrompt challenge_prompt = 2;
+    Feedback feedback = 3;
+    ChallengeResult challenge_result = 4;
+    RetryAvailable retry_available = 5;
+    Decision decision = 6;
+    Error error = 7;
+  }
+}

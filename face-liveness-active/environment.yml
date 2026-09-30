@@ -1,0 +1,16 @@
+name: face-liveness-active
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - mediapipe==1.0.1
+      - numpy==2.5.3
+      - opencv-contrib-python==5.0.0.93
+      - grpcio==1.84.0
+      - grpcio-tools==1.84.0
+      - protobuf==7.36.2
+      - PyYAML==6.0.3
+      - pytest==9.1.1
+      - -e .
