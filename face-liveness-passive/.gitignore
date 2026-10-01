@@ -1,0 +1,4 @@
+# FSFM checkpoints are downloaded by scripts/download_models.py (1 GB each, CC BY-NC 4.0)
+models/*.pth
+models/*.part
+reports/

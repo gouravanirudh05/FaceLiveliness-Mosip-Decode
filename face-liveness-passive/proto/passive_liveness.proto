@@ -1,0 +1,302 @@
+// Passive face liveness (presentation attack detection) and hybrid passive + active liveness.
+//
+// Local service (default 127.0.0.1:50052, insecure). Frames reuse the active module's
+// `Frame` message so a client needs one frame format for both services.
+syntax = "proto3";
+
+package mosip.liveness.passive.v1;
+
+import "active_liveness/grpc_gen/active_liveness.proto";
+
+option java_multiple_files = true;
+option java_package = "io.mosip.extensions.liveness.passive.grpc";
+
+service PassiveLivenessService {
+  // One still image -> full analysis.
+  rpc AnalyzeImage(AnalyzeImageRequest) returns (FrameAnalysis);
+  // A whole encoded video file (mp4/avi/webm ...) -> aggregate over sampled frames.
+  rpc AnalyzeVideo(AnalyzeVideoRequest) returns (StreamResult);
+  // Live frames: per-frame analyses while frames arrive, then one StreamResult.
+  rpc AnalyzeStream(stream StreamRequest) returns (stream StreamResponse);
+  // Passive PAD first; active challenge-response only when passive is inconclusive.
+  rpc HybridSession(stream HybridClientMessage) returns (stream HybridServerMessage);
+  // Models, thresholds and licence information.
+  rpc GetInfo(GetInfoRequest) returns (ServiceInfo);
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  DECISION_BONAFIDE = 1;          // bona fide probability >= accept threshold
+  DECISION_ATTACK = 2;            // bona fide probability <  reject threshold
+  DECISION_UNCERTAIN = 3;         // in between
+  DECISION_NON_RESPONSE = 4;      // not evaluated: no face, poor quality, too few frames ...
+}
+
+enum AttackCategory {
+  ATTACK_CATEGORY_UNSPECIFIED = 0;
+  ATTACK_CATEGORY_NONE = 1;
+  ATTACK_CATEGORY_PRESENTATION_ATTACK = 2;   // physical instrument in front of the camera
+  ATTACK_CATEGORY_DEEPFAKE = 3;
+  ATTACK_CATEGORY_SYNTHETIC = 4;             // diffusion / GAN generated face
+}
+
+enum PAISpecies {                             // heuristic suggestion, not model output
+  PAI_SPECIES_UNSPECIFIED = 0;
+  PAI_SPECIES_NONE = 1;
+  PAI_SPECIES_PRINT = 2;
+  PAI_SPECIES_SCREEN_REPLAY = 3;
+  PAI_SPECIES_UNKNOWN = 4;                    // attack suspected, species not indicated
+}
+
+enum NonResponseReason {
+  NON_RESPONSE_REASON_UNSPECIFIED = 0;
+  NON_RESPONSE_NO_FACE = 1;
+  NON_RESPONSE_MULTIPLE_FACES = 2;
+  NON_RESPONSE_FACE_TOO_SMALL = 3;
+  NON_RESPONSE_TOO_BLURRY = 4;
+  NON_RESPONSE_TOO_DARK = 5;
+  NON_RESPONSE_TOO_BRIGHT = 6;
+  NON_RESPONSE_POSE_OUT_OF_RANGE = 7;
+  NON_RESPONSE_FACE_CUT_OFF = 8;
+  NON_RESPONSE_INSUFFICIENT_FRAMES = 9;
+  NON_RESPONSE_DECODE_ERROR = 10;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_INVALID_REQUEST = 1;
+  ERROR_INVALID_FRAME = 2;        // frame could not be decoded; it is ignored
+  ERROR_INTERNAL = 3;
+}
+
+// ---------------------------------------------------------------- results
+
+message Box {
+  int32 x0 = 1;
+  int32 y0 = 2;
+  int32 x1 = 3;
+  int32 y1 = 4;
+}
+
+message FaceInfo {
+  int32 count = 1;
+  Box box = 2;                    // landmark extent of the analysed (largest) face
+  Box crop_box = 3;               // square crop given to the models
+  float crop_clip = 4;
+  optional float yaw_deg = 5;
+  optional float pitch_deg = 6;
+  optional float roll_deg = 7;
+  optional float eye_blink = 8;
+  repeated Box all_boxes = 9;
+}
+
+message Quality {
+  bool passed = 1;
+  repeated NonResponseReason reasons = 2;
+  float face_px = 3;
+  float sharpness = 4;
+  float brightness = 5;
+  float contrast = 6;
+}
+
+message ModelOutput {
+  string name = 1;
+  map<string, float> probabilities = 2;   // label -> probability
+  repeated float logits = 3;              // in `labels` order
+  repeated string labels = 4;
+  float bonafide_probability = 5;
+  float inference_ms = 6;
+}
+
+message Cues {
+  map<string, float> values = 1;          // raw measurements
+  map<string, float> indicators = 2;      // PAI indicators in [0, 1]
+  repeated string evidence = 3;
+}
+
+message FrameAnalysis {
+  int64 timestamp_ms = 1;
+  Decision decision = 2;
+  optional float bonafide_probability = 3;   // fused liveness score in [0, 1]
+  bool attack_detected = 4;
+  map<string, float> categories = 5;         // bonafide / presentation_attack / deepfake / synthetic
+  AttackCategory attack_category = 6;
+  PAISpecies suspected_pai_species = 7;
+  FaceInfo face = 8;
+  Quality quality = 9;
+  repeated ModelOutput models = 10;
+  Cues cues = 11;
+  map<string, float> timings_ms = 12;
+  bytes heatmap_png = 13;                    // Grad-CAM overlay, only when requested
+  string json = 14;                          // the complete result as JSON
+}
+
+message TemporalCues {
+  int32 frames = 1;
+  optional float head_motion = 2;
+  optional float expression_range = 3;
+  optional bool blink_detected = 4;
+  optional float static_face = 5;
+  optional float score_std = 6;
+}
+
+message StreamResult {
+  Decision decision = 1;
+  optional float bonafide_probability = 2;
+  bool attack_detected = 3;
+  map<string, float> categories = 4;
+  AttackCategory attack_category = 5;
+  PAISpecies suspected_pai_species = 6;
+  map<string, float> pai_indicators = 7;
+  int32 frames_received = 8;
+  int32 frames_analysed = 9;
+  int32 frames_used = 10;
+  bool complete = 11;
+  int64 duration_ms = 12;
+  map<string, int32> non_response_reasons = 13;
+  TemporalCues temporal = 14;
+  map<string, float> thresholds = 15;
+  repeated FrameAnalysis frames = 16;        // only when include_frames
+  string json = 17;                          // the complete result as JSON (frames excluded)
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+// ---------------------------------------------------------------- requests
+
+message AnalyzeImageRequest {
+  bytes data = 1;                 // encoded image (JPEG / PNG / ...) or raw pixels
+  mosip.liveness.active.v1.FrameEncoding encoding = 2;   // UNSPECIFIED = encoded image
+  uint32 width = 3;               // RAW_* only
+  uint32 height = 4;
+  bool explain = 5;               // attach a Grad-CAM heat map
+}
+
+message AnalyzeVideoRequest {
+  bytes data = 1;                 // encoded video file
+  string filename_hint = 2;       // e.g. "clip.mp4"; helps the demuxer pick a container
+  uint32 max_frames = 3;          // 0 = all
+  bool include_frames = 4;
+  bool stop_when_complete = 5;    // stop reading once frames_required usable frames were seen
+}
+
+message StartStream {
+  uint32 frames_required = 1;     // 0 = configured default
+  bool include_frames = 2;        // repeat every analysed frame inside the final result
+  bool explain = 3;
+  bool allow_partial = 4;         // on End: score whatever usable frames were collected
+}
+
+message EndStream {}
+
+message StreamRequest {
+  oneof payload {
+    StartStream start = 1;
+    mosip.liveness.active.v1.Frame frame = 2;
+    EndStream end = 3;            // finish now (otherwise the result is sent once enough frames arrive)
+  }
+}
+
+message StreamResponse {
+  oneof payload {
+    FrameAnalysis frame = 1;      // every analysed frame (frames skipped by the sampling interval get none)
+    StreamResult result = 2;      // exactly once, last
+    Error error = 3;
+  }
+}
+
+// ---------------------------------------------------------------- hybrid
+
+message HybridStart {
+  mosip.liveness.active.v1.Workflow workflow = 1;
+}
+
+message HybridClientMessage {
+  oneof payload {
+    HybridStart start = 1;
+    mosip.liveness.active.v1.Frame frame = 2;
+    mosip.liveness.active.v1.Retry retry = 3;
+    mosip.liveness.active.v1.Cancel cancel = 4;
+  }
+}
+
+enum HybridStatus {
+  HYBRID_STATUS_UNSPECIFIED = 0;
+  HYBRID_PASSED = 1;
+  HYBRID_FAILED = 2;
+  HYBRID_CANCELLED = 3;
+}
+
+enum HybridReason {
+  HYBRID_REASON_UNSPECIFIED = 0;
+  HYBRID_REASON_PASSIVE_BONAFIDE = 1;
+  HYBRID_REASON_ATTACK_DETECTED = 2;
+  HYBRID_REASON_ATTACK_DETECTED_DURING_ACTIVE = 3;
+  HYBRID_REASON_PASSIVE_NO_RESPONSE = 4;
+  HYBRID_REASON_ACTIVE_PASSED = 5;
+  HYBRID_REASON_ACTIVE_FAILED = 6;
+  HYBRID_REASON_ACTIVE_DISABLED = 7;
+  HYBRID_REASON_CANCELLED = 8;
+}
+
+enum NextStep {
+  NEXT_STEP_UNSPECIFIED = 0;
+  NEXT_STEP_ACCEPT = 1;
+  NEXT_STEP_REJECT = 2;
+  NEXT_STEP_ACTIVE = 3;           // challenges follow as `active` messages
+}
+
+message HybridStarted {
+  string session_id = 1;
+  mosip.liveness.active.v1.Workflow workflow = 2;
+  int32 frames_required = 3;
+}
+
+message PassiveProgress {
+  int32 frames_used = 1;
+  int32 frames_required = 2;
+  Quality quality = 3;            // of the frame just analysed (for "move closer" style guidance)
+}
+
+message PassiveVerdict {
+  StreamResult result = 1;
+  NextStep next_step = 2;
+}
+
+message MonitorResult {
+  FrameAnalysis frame = 1;
+  int32 consecutive_attacks = 2;
+}
+
+message HybridDecision {
+  HybridStatus status = 1;
+  HybridReason reason = 2;
+  string message = 3;             // user-facing; never mentions attack detection
+  optional float passive_score = 4;
+  string active_status = 5;       // active session status, empty if none ran
+}
+
+message HybridServerMessage {
+  oneof payload {
+    HybridStarted started = 1;
+    PassiveProgress passive_progress = 2;
+    PassiveVerdict passive_verdict = 3;
+    mosip.liveness.active.v1.ServerMessage active = 4;   // challenge prompts, feedback, results ...
+    MonitorResult monitor = 5;
+    HybridDecision decision = 6;
+    Error error = 7;
+  }
+}
+
+// ---------------------------------------------------------------- info
+
+message GetInfoRequest {}
+
+message ServiceInfo {
+  string json = 1;                // models, thresholds, configuration, licence
+}

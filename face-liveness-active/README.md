@@ -18,12 +18,13 @@ python -m active_liveness.server          # listens on 127.0.0.1:50051 (config/d
 
 ### Webcam demo (manual testing)
 
-With the server running, in a second terminal:
+The webcam client lives at the repository root and covers the active, passive and hybrid modes.
+With the server running, in a second terminal (from the repository root):
 
 ```bash
-python scripts/webcam_client.py                      # camera 0, resident workflow, no passive score
-python scripts/webcam_client.py --camera 1 --workflow supervisor --passive 0.3
-python scripts/webcam_client.py --headless --source some_video.mp4   # no window, prints events
+python webcam_client.py --mode active                # camera 0, resident workflow, no passive score
+python webcam_client.py --mode active --camera 1 --workflow supervisor --passive 0.3
+python webcam_client.py --mode active --headless --source some_video.mp4   # no window, prints events
 ```
 
 The window shows the prompt, a countdown, live feedback, a progress bar and a face guide.

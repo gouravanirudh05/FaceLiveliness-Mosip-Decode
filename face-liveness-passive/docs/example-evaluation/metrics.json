@@ -1,0 +1,210 @@
+{
+  "meta": {
+    "date": "2026-10-01 08:49:58",
+    "decision rule": "attack if fused bona fide probability < threshold",
+    "accept / reject thresholds": "0.8 / 0.4",
+    "quality gate enforced": true,
+    "models": "unified (fsfm_unified_4class_vitb16.pth, weight 0.5), fas (fsfm_fas_mcio_vitb16.pth, weight 0.5)",
+    "dataset": "synthetic-demo"
+  },
+  "metrics": {
+    "counts": {
+      "bonafide": 4,
+      "attack": 8,
+      "per_species": {
+        "print": 4,
+        "screen_replay": 4
+      }
+    },
+    "non_response": {
+      "apnrr": {
+        "value": 0.125,
+        "errors": 1,
+        "total": 8,
+        "ci95": [
+          0.02241749145005667,
+          0.4708881822128535
+        ]
+      },
+      "bpnrr": {
+        "value": 0.0,
+        "errors": 0,
+        "total": 4,
+        "ci95": [
+          0.0,
+          0.4898908364545973
+        ],
+        "rule_of_3_upper": 0.75
+      },
+      "apnrr_per_species": {
+        "print": {
+          "value": 0.0,
+          "errors": 0,
+          "total": 4,
+          "ci95": [
+            0.0,
+            0.4898908364545973
+          ],
+          "rule_of_3_upper": 0.75
+        },
+        "screen_replay": {
+          "value": 0.25,
+          "errors": 1,
+          "total": 4,
+          "ci95": [
+            0.04558726080970055,
+            0.6993581574175981
+          ]
+        }
+      }
+    },
+    "operating_points": {
+      "reject_threshold": {
+        "threshold": 0.4,
+        "apcer_per_species": {
+          "print": {
+            "value": 1.0,
+            "errors": 4,
+            "total": 4,
+            "ci95": [
+              0.5101091635454027,
+              1.0
+            ]
+          },
+          "screen_replay": {
+            "value": 1.0,
+            "errors": 3,
+            "total": 3,
+            "ci95": [
+              0.4385029682449546,
+              1.0
+            ]
+          }
+        },
+        "apcer_max": {
+          "species": "print",
+          "value": 1.0,
+          "errors": 4,
+          "total": 4,
+          "ci95": [
+            0.5101091635454027,
+            1.0
+          ]
+        },
+        "apcer_pooled": {
+          "value": 1.0,
+          "errors": 7,
+          "total": 7,
+          "ci95": [
+            0.6456695649333126,
+            1.0
+          ]
+        },
+        "bpcer": {
+          "value": 0.0,
+          "errors": 0,
+          "total": 4,
+          "ci95": [
+            0.0,
+            0.4898908364545973
+          ],
+          "rule_of_3_upper": 0.75
+        },
+        "acer_informative": 0.5
+      },
+      "accept_threshold": {
+        "threshold": 0.8,
+        "apcer_per_species": {
+          "print": {
+            "value": 0.0,
+            "errors": 0,
+            "total": 4,
+            "ci95": [
+              0.0,
+              0.4898908364545973
+            ],
+            "rule_of_3_upper": 0.75
+          },
+          "screen_replay": {
+            "value": 0.0,
+            "errors": 0,
+            "total": 3,
+            "ci95": [
+              5.551115123125783e-17,
+              0.5614970317550454
+            ],
+            "rule_of_3_upper": 1.0
+          }
+        },
+        "apcer_max": {
+          "species": "print",
+          "value": 0.0,
+          "errors": 0,
+          "total": 4,
+          "ci95": [
+            0.0,
+            0.4898908364545973
+          ],
+          "rule_of_3_upper": 0.75
+        },
+        "apcer_pooled": {
+          "value": 0.0,
+          "errors": 0,
+          "total": 7,
+          "ci95": [
+            5.551115123125783e-17,
+            0.35433043506668743
+          ],
+          "rule_of_3_upper": 0.42857142857142855
+        },
+        "bpcer": {
+          "value": 0.0,
+          "errors": 0,
+          "total": 4,
+          "ci95": [
+            0.0,
+            0.4898908364545973
+          ],
+          "rule_of_3_upper": 0.75
+        },
+        "acer_informative": 0.0
+      }
+    },
+    "bpcer_at_apcer": {
+      "BPCER10": {
+        "bpcer": 0.0,
+        "threshold": 0.8379415,
+        "apcer_max": 0.0
+      },
+      "BPCER20": {
+        "bpcer": 0.0,
+        "threshold": 0.8379415,
+        "apcer_max": 0.0
+      },
+      "BPCER100": {
+        "bpcer": 0.0,
+        "threshold": 0.8379415,
+        "apcer_max": 0.0
+      }
+    },
+    "eer": {
+      "eer": 0.0,
+      "threshold": 0.8379415
+    },
+    "auc": 1.0,
+    "notes": [
+      "PAI species 'print' has only 4 presentations; its APCER confidence interval is wide (ISO/IEC 19795-1 'rule of 30' needs >= 30 errors for +/-30 % at 90 % confidence).",
+      "PAI species 'screen_replay' has only 4 presentations; its APCER confidence interval is wide (ISO/IEC 19795-1 'rule of 30' needs >= 30 errors for +/-30 % at 90 % confidence).",
+      "only 4 bona fide presentations; BPCER is poorly estimated."
+    ]
+  },
+  "species_confusion": {
+    "print": {
+      "print": 4
+    },
+    "screen_replay": {
+      "screen_replay": 3,
+      "none": 1
+    }
+  }
+}

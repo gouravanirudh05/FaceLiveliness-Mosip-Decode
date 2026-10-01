@@ -1,0 +1,13 @@
+source,label,attack_potential,score,decision,attack_category,suspected_pai_species,non_response_reasons,seconds
+synthetic-demo/bonafide/business-person_0.png,bonafide,,0.931282,bonafide,none,none,,1.170
+synthetic-demo/bonafide/business-person_1.png,bonafide,,0.929353,bonafide,none,none,,0.533
+synthetic-demo/bonafide/portrait_0.png,bonafide,,0.911656,bonafide,none,none,,0.466
+synthetic-demo/bonafide/portrait_1.png,bonafide,,0.903327,bonafide,none,none,,0.544
+synthetic-demo/print/business-person_0_0.png,print,,0.772556,uncertain,none,print,,0.548
+synthetic-demo/print/business-person_1_0.png,print,,0.770674,uncertain,none,print,,0.564
+synthetic-demo/print/portrait_0_0.png,print,,0.670658,uncertain,none,print,,0.497
+synthetic-demo/print/portrait_1_0.png,print,,0.669778,uncertain,none,print,,0.592
+synthetic-demo/screen_replay/business-person_0_0.png,screen_replay,,0.502160,uncertain,none,screen_replay,,0.590
+synthetic-demo/screen_replay/business-person_1_0.png,screen_replay,,0.490328,uncertain,none,screen_replay,,0.637
+synthetic-demo/screen_replay/portrait_0_0.png,screen_replay,,0.545750,uncertain,none,screen_replay,,0.526
+synthetic-demo/screen_replay/portrait_1_0.png,screen_replay,,,non_response,none,none,no_face,0.041

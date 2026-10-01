@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "passive-liveness"
+version = "0.1.0"
+description = "Passive face liveness / presentation attack detection for MOSIP, built on FSFM (CVPR 2025) ViT checkpoints."
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.4",
+    "numpy",
+    "pillow",
+    "opencv-contrib-python",
+    "mediapipe==1.0.1",
+    "grpcio==1.84.0",
+    "protobuf",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+# Hybrid passive + active flow (and its gRPC messages) needs the sibling active module.
+hybrid = ["active-liveness"]
+dev = ["pytest", "grpcio-tools==1.84.0"]
+
+[project.scripts]
+passive-liveness-server = "passive_liveness.server:main"
+passive-liveness = "passive_liveness.cli:main"
+passive-liveness-eval = "passive_liveness.evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+faulthandler_timeout = 300
+markers = ["models: needs the downloaded FSFM checkpoints (skipped if missing)"]

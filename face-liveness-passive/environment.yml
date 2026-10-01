@@ -1,0 +1,20 @@
+name: face-liveness-passive
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch==2.14.1
+      - torchvision==0.29.1
+      - mediapipe==1.0.1
+      - numpy==2.5.3
+      - opencv-contrib-python==5.0.0.93
+      - grpcio==1.84.0
+      - grpcio-tools==1.84.0
+      - protobuf==7.36.2
+      - PyYAML==6.0.3
+      - pytest==9.1.1
+      - -e ../face-liveness-active
+      - -e .

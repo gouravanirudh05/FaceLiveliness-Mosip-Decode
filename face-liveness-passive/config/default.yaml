@@ -1,0 +1,67 @@
+# Passive face liveness (PAD) configuration.
+# Relative paths are resolved against the directory containing this file.
+# Thresholds below are UNCALIBRATED defaults: calibrate them with
+# `passive-liveness-eval` (ISO/IEC 30107-3) on data from your own capture devices.
+
+models:
+  dir: ../models
+  torch_threads: 0            # 0 = PyTorch default (all cores)
+  verify_sha256: false        # hash the 2 x 1 GB checkpoints at start-up (~5 s)
+  # FSFM ViT-B/16, Unified-detector v1: bonafide / deepfake / diffusion(AIGC) / spoof.
+  unified:
+    enabled: true
+    file: fsfm_unified_4class_vitb16.pth
+    sha256: 803f2eb06cda9cc4ee9ba6165001992623473eec374422284ccbaee9edee9550
+    weight: 0.5               # share of this model in the fused probabilities
+  # FSFM ViT-B/16 fine-tuned for face anti-spoofing on MSU, CASIA, Idiap Replay, OULU-NPU.
+  fas:
+    enabled: true
+    file: fsfm_fas_mcio_vitb16.pth
+    sha256: 325ab622baab1df57eb9a0a43ed66ca644155db58759f1f784a4f6b432dd889c
+    weight: 0.5
+
+face:
+  landmarker_path: ../models/face_landmarker.task
+  max_faces: 2                # detect up to this many so "multiple faces" can be reported
+  # Square crop side = crop_scale x landmark extent. 1.17 = 1.3 (upstream dlib crop
+  # factor) x 0.90 (measured dlib-box / MediaPipe-landmark-extent ratio).
+  crop_scale: 1.17
+
+quality:
+  enforce: true               # failed quality => NON_RESPONSE decision (scores still reported)
+  min_face_px: 96             # landmark extent in pixels
+  min_sharpness: 15.0         # variance of Laplacian on the 224 px crop
+  min_brightness: 40.0        # mean grey level of the crop
+  max_brightness: 220.0
+  max_abs_yaw_deg: 35.0
+  max_abs_pitch_deg: 30.0
+  max_crop_clip: 0.20         # max fraction of the crop that falls outside the frame
+
+decision:
+  accept_threshold: 0.80      # fused bona fide probability >= this => BONAFIDE
+  reject_threshold: 0.40      # fused bona fide probability <  this => ATTACK; between => UNCERTAIN
+
+stream:
+  frames_required: 5          # quality-passing frames aggregated into one result
+  min_frame_interval_ms: 150  # frames closer together than this are skipped
+  max_duration_ms: 10000      # give up (NON_RESPONSE) after this long without enough frames
+  aggregation: mean           # mean | median | min (of per-frame bona fide probability)
+
+cues:
+  enabled: true               # heuristic PAI indicators (print / screen replay); not model output
+
+explain:
+  gradcam: false              # attach a Grad-CAM heat map (PNG) per analysed frame (~2x slower)
+
+service:
+  host: 127.0.0.1
+  port: 50052
+  max_workers: 4
+  max_message_mb: 64          # largest accepted request (video uploads)
+
+hybrid:
+  active_config: ../../face-liveness-active/config/default.yaml
+  on_passive_no_response: active    # active | fail
+  monitor_during_active: true       # keep running PAD on sampled frames during challenges
+  monitor_interval_ms: 1000
+  monitor_attack_frames: 2          # consecutive ATTACK frames that abort the active phase
