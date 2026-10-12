@@ -162,8 +162,24 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
         return stream_to_proto(result)
 
     def GetInfo(self, request, context):
-        return pb.ServiceInfo(json=json.dumps({"models": self.engine.info(),
+        models = self.engine.info()
+        return pb.ServiceInfo(json=json.dumps({"models": models,
+                                               "capabilities": self.capabilities(models),
                                                "config": dataclasses.asdict(self.config)}, default=str))
+
+    def capabilities(self, models: dict) -> dict:
+        """What this engine supports, for capability discovery by the Registration Client (diagnostics, policy)."""
+        from active_liveness.types import Action
+        return {
+            "modes": ["passive", "active", "hybrid"],
+            "workflows": ["resident", "operator", "supervisor"],
+            "challenge_types": [a.value for a in Action],
+            "attack_classes": sorted({label for m in models.values() for label in m.get("labels", [])
+                                      if label != "bonafide"}),
+            "frame_encodings": ["jpeg", "png", "bmp", "webp", "raw_rgb", "raw_bgr"],
+            "per_session_policy": True,
+            "model_integrity_verified": bool(self.config.models.verify_sha256),
+        }
 
     # -------------------------------------------------------------- streaming
 
@@ -206,7 +222,7 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
     def HybridSession(self, request_iterator, context) -> Iterator[pb.HybridServerMessage]:
         from active_liveness.types import Workflow
 
-        from .hybrid import HybridLivenessSession, HybridStatus
+        from .hybrid import HybridLivenessSession, HybridStatus, PolicyError
 
         session = None
         workflows = {apb.WORKFLOW_RESIDENT: Workflow.RESIDENT, apb.WORKFLOW_OPERATOR: Workflow.OPERATOR,
@@ -219,9 +235,15 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
                         yield pb.HybridServerMessage(error=_error(
                             pb.ERROR_INVALID_REQUEST, "first message must be start with a workflow"))
                         return
-                    session = HybridLivenessSession(
-                        self.engine, self._load_active_config(), workflows[msg.start.workflow],
-                        active_analyzer_factory=self._active_analyzer_factory, rng=self._rng_factory())
+                    try:
+                        session = HybridLivenessSession(
+                            self.engine, self._load_active_config(), workflows[msg.start.workflow],
+                            active_analyzer_factory=self._active_analyzer_factory, rng=self._rng_factory(),
+                            policy=session_policy_from_proto(msg.start.policy) if msg.start.HasField("policy")
+                            else None)
+                    except PolicyError as e:
+                        yield pb.HybridServerMessage(error=_error(pb.ERROR_INVALID_REQUEST, f"invalid policy: {e}"))
+                        return
                     events = session.start()
                 elif kind == "frame":
                     if session.retry_available:
@@ -260,6 +282,20 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
         return self._active_config
 
 
+def session_policy_from_proto(p: pb.SessionPolicy):
+    from .hybrid import SessionPolicy
+
+    def opt(name):
+        return getattr(p, name) if p.HasField(name) else None
+
+    return SessionPolicy(
+        accept_threshold=opt("accept_threshold"), reject_threshold=opt("reject_threshold"),
+        fail_on_passive_no_response=opt("fail_on_passive_no_response"), active_enabled=opt("active_enabled"),
+        min_challenges=opt("min_challenges"), challenge_pool=tuple(p.challenge_pool),
+        compound_challenges=opt("compound_challenges"), max_retries=opt("max_retries"),
+        step_timeouts_s=tuple(p.step_timeout_s))
+
+
 def hybrid_to_proto(e) -> pb.HybridServerMessage:
     from active_liveness.server import to_proto as active_to_proto
 
@@ -270,7 +306,7 @@ def hybrid_to_proto(e) -> pb.HybridServerMessage:
         case HybridStarted():
             return pb.HybridServerMessage(started=pb.HybridStarted(
                 session_id=e.session_id, workflow=apb.Workflow.Value(f"WORKFLOW_{e.workflow.name}"),
-                frames_required=e.frames_required))
+                frames_required=e.frames_required, policy_json=json.dumps(e.policy, sort_keys=True)))
         case PassiveProgress():
             return pb.HybridServerMessage(passive_progress=pb.PassiveProgress(
                 frames_used=e.frames_used, frames_required=e.frames_required,

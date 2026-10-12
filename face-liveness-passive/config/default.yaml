@@ -6,7 +6,7 @@
 models:
   dir: ../models
   torch_threads: 0            # 0 = PyTorch default (all cores)
-  verify_sha256: false        # hash the 2 x 1 GB checkpoints at start-up (~5 s)
+  verify_sha256: true         # refuse tampered/unapproved checkpoints (hashes the 2 x 1 GB files at start-up, ~5 s)
   # FSFM ViT-B/16, Unified-detector v1: bonafide / deepfake / diffusion(AIGC) / spoof.
   unified:
     enabled: true

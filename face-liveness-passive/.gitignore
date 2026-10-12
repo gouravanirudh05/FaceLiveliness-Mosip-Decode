@@ -2,3 +2,4 @@
 models/*.pth
 models/*.part
 reports/
+models/onnx/

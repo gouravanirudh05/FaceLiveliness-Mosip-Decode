@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# MOSIP integration: service PIDs/logs and build logs
+.run/
+.build-logs/
+# maven-shade-plugin output
+dependency-reduced-pom.xml

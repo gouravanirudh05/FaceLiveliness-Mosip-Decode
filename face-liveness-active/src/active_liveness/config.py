@@ -13,6 +13,7 @@ Unknown keys are rejected so that typos never silently fall back to defaults.
 from __future__ import annotations
 
 import copy
+import dataclasses
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Mapping
@@ -199,6 +200,51 @@ def _parse_policy(raw: Mapping[str, Any], where: str) -> LivenessPolicy:
         escalation=escalation,
         thresholds=thresholds,
     )
+
+
+def apply_overrides(
+    policy: LivenessPolicy,
+    *,
+    enabled: bool | None = None,
+    min_challenges: int | None = None,
+    challenge_pool: list[str] | tuple[str, ...] | None = None,
+    compound_challenges: bool | None = None,
+    max_retries: int | None = None,
+    step_timeouts_s: list[float] | tuple[float, ...] | None = None,
+) -> LivenessPolicy:
+    """A copy of ``policy`` with caller-supplied settings (e.g. from the Registration Client's
+    configuration) applied. ``None`` / empty keeps the configured value. Validated like the YAML.
+
+    ``step_timeouts_s[i]`` is the timeout of step position ``i``; later positions reuse the last
+    entry, and yaw/pitch strictness of each position is kept (extra positions reuse the last step's).
+    """
+    where = "session policy"
+    changes: dict[str, Any] = {}
+    if enabled is not None:
+        changes["enabled"] = _bool(enabled, f"{where}.enabled")
+    if min_challenges is not None:
+        changes["min_challenges"] = _int(min_challenges, f"{where}.min_challenges", 1)
+    if challenge_pool:
+        try:
+            pool = tuple(Action(a) for a in challenge_pool)
+        except ValueError as e:
+            raise ConfigError(f"{where}.challenge_pool: {e}; valid: {[a.value for a in Action]}") from e
+        if len(set(pool)) != len(pool):
+            raise ConfigError(f"{where}.challenge_pool contains duplicates")
+        changes["challenge_pool"] = pool
+    if compound_challenges is not None:
+        changes["compound_challenges"] = _bool(compound_challenges, f"{where}.compound_challenges")
+    if max_retries is not None:
+        changes["max_retries"] = _int(max_retries, f"{where}.max_retries", 0)
+    if step_timeouts_s:
+        timeouts = [_positive(t, f"{where}.step_timeouts_s[{i}]") for i, t in enumerate(step_timeouts_s)]
+        n = max(len(timeouts), len(policy.steps))
+        changes["steps"] = tuple(
+            StepParams(timeout_s=timeouts[min(i, len(timeouts) - 1)],
+                       yaw_deg=policy.step_params(i).yaw_deg,
+                       pitch_deg=policy.step_params(i).pitch_deg)
+            for i in range(n))
+    return dataclasses.replace(policy, **changes) if changes else policy
 
 
 # ---------------------------------------------------------------- helpers

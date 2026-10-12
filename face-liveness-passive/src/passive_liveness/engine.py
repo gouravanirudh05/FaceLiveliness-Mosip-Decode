@@ -29,7 +29,7 @@ import torch
 
 from . import cues as cue_mod
 from . import quality as quality_mod
-from .config import DEFAULT_CONFIG_PATH, PassiveConfig, load_config
+from .config import DEFAULT_CONFIG_PATH, DecisionConfig, PassiveConfig, load_config
 from .face import DetectedFace, FaceDetector, crop_box, extract_crop
 from .io import ImageInput, VideoSource, iter_video, load_image
 from .models import FAS, UNIFIED, Classifier, FSFMClassifier, fuse
@@ -135,11 +135,12 @@ class PassiveLivenessEngine:
 
     def open_stream(self, *, include_frames: bool = True, explain: bool | None = None,
                     frames_required: int | None = None, enforce_duration: bool = True,
-                    keep_going: bool = False) -> "PassiveStream":
-        """``keep_going``: keep analysing (and aggregating) sampled frames after ``done``."""
+                    keep_going: bool = False, decision: DecisionConfig | None = None) -> "PassiveStream":
+        """``keep_going``: keep analysing (and aggregating) sampled frames after ``done``.
+        ``decision``: accept/reject thresholds for this stream's result (default: the configured ones)."""
         return PassiveStream(self, include_frames=include_frames, explain=explain,
                              frames_required=frames_required, enforce_duration=enforce_duration,
-                             keep_going=keep_going)
+                             keep_going=keep_going, decision=decision)
 
     def info(self) -> dict:
         out = {}
@@ -267,9 +268,11 @@ class PassiveStream:
     """Per-session frame stream. Feed frames with strictly increasing timestamps."""
 
     def __init__(self, engine: PassiveLivenessEngine, *, include_frames: bool, explain: bool | None,
-                 frames_required: int | None, enforce_duration: bool, keep_going: bool = False):
+                 frames_required: int | None, enforce_duration: bool, keep_going: bool = False,
+                 decision: DecisionConfig | None = None):
         self.engine = engine
         self.cfg = engine.config.stream
+        self.decision_config = decision or engine.config.decision
         self.frames_required = frames_required or self.cfg.frames_required
         self.include_frames = include_frames
         self.explain = explain
@@ -335,7 +338,7 @@ class PassiveStream:
     def result(self, *, allow_partial: bool = False) -> StreamResult:
         """Aggregate. Without ``allow_partial`` fewer than ``frames_required`` usable frames
         is a NON_RESPONSE (INSUFFICIENT_FRAMES); with it, any usable frame yields a score."""
-        cfg = self.engine.config
+        cfg = replace(self.engine.config, decision=self.decision_config)
         used = self._used
         complete = len(used) >= self.frames_required
         reasons: dict[str, int] = {}

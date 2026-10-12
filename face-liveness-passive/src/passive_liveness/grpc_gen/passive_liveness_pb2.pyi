@@ -423,11 +423,35 @@ class StreamResponse(_message.Message):
     error: Error
     def __init__(self, frame: _Optional[_Union[FrameAnalysis, _Mapping]] = ..., result: _Optional[_Union[StreamResult, _Mapping]] = ..., error: _Optional[_Union[Error, _Mapping]] = ...) -> None: ...
 
+class SessionPolicy(_message.Message):
+    __slots__ = ("accept_threshold", "reject_threshold", "fail_on_passive_no_response", "active_enabled", "min_challenges", "challenge_pool", "compound_challenges", "max_retries", "step_timeout_s")
+    ACCEPT_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    REJECT_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    FAIL_ON_PASSIVE_NO_RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_ENABLED_FIELD_NUMBER: _ClassVar[int]
+    MIN_CHALLENGES_FIELD_NUMBER: _ClassVar[int]
+    CHALLENGE_POOL_FIELD_NUMBER: _ClassVar[int]
+    COMPOUND_CHALLENGES_FIELD_NUMBER: _ClassVar[int]
+    MAX_RETRIES_FIELD_NUMBER: _ClassVar[int]
+    STEP_TIMEOUT_S_FIELD_NUMBER: _ClassVar[int]
+    accept_threshold: float
+    reject_threshold: float
+    fail_on_passive_no_response: bool
+    active_enabled: bool
+    min_challenges: int
+    challenge_pool: _containers.RepeatedScalarFieldContainer[str]
+    compound_challenges: bool
+    max_retries: int
+    step_timeout_s: _containers.RepeatedScalarFieldContainer[float]
+    def __init__(self, accept_threshold: _Optional[float] = ..., reject_threshold: _Optional[float] = ..., fail_on_passive_no_response: _Optional[bool] = ..., active_enabled: _Optional[bool] = ..., min_challenges: _Optional[int] = ..., challenge_pool: _Optional[_Iterable[str]] = ..., compound_challenges: _Optional[bool] = ..., max_retries: _Optional[int] = ..., step_timeout_s: _Optional[_Iterable[float]] = ...) -> None: ...
+
 class HybridStart(_message.Message):
-    __slots__ = ("workflow",)
+    __slots__ = ("workflow", "policy")
     WORKFLOW_FIELD_NUMBER: _ClassVar[int]
+    POLICY_FIELD_NUMBER: _ClassVar[int]
     workflow: _active_liveness_pb2.Workflow
-    def __init__(self, workflow: _Optional[_Union[_active_liveness_pb2.Workflow, str]] = ...) -> None: ...
+    policy: SessionPolicy
+    def __init__(self, workflow: _Optional[_Union[_active_liveness_pb2.Workflow, str]] = ..., policy: _Optional[_Union[SessionPolicy, _Mapping]] = ...) -> None: ...
 
 class HybridClientMessage(_message.Message):
     __slots__ = ("start", "frame", "retry", "cancel")
@@ -442,14 +466,16 @@ class HybridClientMessage(_message.Message):
     def __init__(self, start: _Optional[_Union[HybridStart, _Mapping]] = ..., frame: _Optional[_Union[_active_liveness_pb2.Frame, _Mapping]] = ..., retry: _Optional[_Union[_active_liveness_pb2.Retry, _Mapping]] = ..., cancel: _Optional[_Union[_active_liveness_pb2.Cancel, _Mapping]] = ...) -> None: ...
 
 class HybridStarted(_message.Message):
-    __slots__ = ("session_id", "workflow", "frames_required")
+    __slots__ = ("session_id", "workflow", "frames_required", "policy_json")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     WORKFLOW_FIELD_NUMBER: _ClassVar[int]
     FRAMES_REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    POLICY_JSON_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     workflow: _active_liveness_pb2.Workflow
     frames_required: int
-    def __init__(self, session_id: _Optional[str] = ..., workflow: _Optional[_Union[_active_liveness_pb2.Workflow, str]] = ..., frames_required: _Optional[int] = ...) -> None: ...
+    policy_json: str
+    def __init__(self, session_id: _Optional[str] = ..., workflow: _Optional[_Union[_active_liveness_pb2.Workflow, str]] = ..., frames_required: _Optional[int] = ..., policy_json: _Optional[str] = ...) -> None: ...
 
 class PassiveProgress(_message.Message):
     __slots__ = ("frames_used", "frames_required", "quality")

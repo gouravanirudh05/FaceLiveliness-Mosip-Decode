@@ -1,0 +1,12 @@
+[submodule "mosip/registration-client"]
+	path = mosip/registration-client
+	url = https://github.com/mosip/registration-client.git
+	branch = release-1.2.0.x
+[submodule "mosip/mosip-mock-services"]
+	path = mosip/mosip-mock-services
+	url = https://github.com/mosip/mosip-mock-services.git
+	branch = release-1.2.0.x
+[submodule "mosip/android-registration-client"]
+	path = mosip/android-registration-client
+	url = https://github.com/mosip/android-registration-client.git
+	branch = release-1.2.x

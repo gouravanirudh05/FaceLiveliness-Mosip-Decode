@@ -212,8 +212,23 @@ message StreamResponse {
 
 // ---------------------------------------------------------------- hybrid
 
+// Per-session policy, e.g. from the Registration Client's configuration. Unset / empty fields keep
+// the service's configured value. An invalid policy ends the session with ERROR_INVALID_REQUEST.
+message SessionPolicy {
+  optional float accept_threshold = 1;            // passive bona fide score >= this => accept
+  optional float reject_threshold = 2;            // passive bona fide score <  this => attack
+  optional bool fail_on_passive_no_response = 3;  // no face / poor quality in passive: fail instead of challenges
+  optional bool active_enabled = 4;
+  optional uint32 min_challenges = 5;
+  repeated string challenge_pool = 6;             // action names: blink, smile, open_mouth, turn_left, ...
+  optional bool compound_challenges = 7;
+  optional uint32 max_retries = 8;                // retries after the first attempt
+  repeated float step_timeout_s = 9;              // timeout per step position; later steps reuse the last
+}
+
 message HybridStart {
   mosip.liveness.active.v1.Workflow workflow = 1;
+  SessionPolicy policy = 2;                       // optional
 }
 
 message HybridClientMessage {
@@ -255,6 +270,7 @@ message HybridStarted {
   string session_id = 1;
   mosip.liveness.active.v1.Workflow workflow = 2;
   int32 frames_required = 3;
+  string policy_json = 4;                         // effective policy of this session (for audit)
 }
 
 message PassiveProgress {

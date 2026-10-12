@@ -13,6 +13,9 @@ While challenges run, PAD keeps sampling frames (``hybrid.monitor_*``); consecut
 ATTACK frames end the session as FAILED (attack_detected_during_active).
 
 Messages shown to the user never say that an attack was detected.
+
+A caller may pass a ``SessionPolicy`` (e.g. the Registration Client's per-workflow configuration);
+its settings override the service's YAML for that session only.
 """
 
 from __future__ import annotations
@@ -22,17 +25,19 @@ import json
 import logging
 import random
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 import numpy as np
 
-from .engine import PassiveLivenessEngine, PassiveStream
+from .config import DecisionConfig
+from .engine import PassiveLivenessEngine, PassiveStream, decide
 from .types import Decision, FrameAnalysis, StreamResult
 
 try:
     from active_liveness import ActiveLivenessSession, AppConfig, SessionStatus, Workflow
     from active_liveness.analyzer import FaceAnalyzer, MediaPipeFaceAnalyzer
+    from active_liveness.config import ConfigError as ActiveConfigError, LivenessPolicy, apply_overrides
     from active_liveness.events import (
         MAX_RETRIES_MESSAGE, SUCCESS_MESSAGES, Decision as ActiveDecision, DecisionStatus as ActiveStatus,
         Event as ActiveEventType,
@@ -73,11 +78,73 @@ class NextStep(enum.Enum):
     ACTIVE = "active"
 
 
+class PolicyError(ValueError):
+    """An invalid caller-supplied session policy."""
+
+
+@dataclass(frozen=True)
+class SessionPolicy:
+    """Per-session overrides; ``None`` / empty keeps the service's configured value."""
+
+    accept_threshold: float | None = None       # passive bona fide score >= this => accept
+    reject_threshold: float | None = None       # passive bona fide score <  this => attack
+    fail_on_passive_no_response: bool | None = None
+    active_enabled: bool | None = None
+    min_challenges: int | None = None
+    challenge_pool: tuple[str, ...] = ()
+    compound_challenges: bool | None = None
+    max_retries: int | None = None
+    step_timeouts_s: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class EffectivePolicy:
+    """What a session actually runs with (reported back to the caller for audit)."""
+
+    accept_threshold: float
+    reject_threshold: float
+    on_passive_no_response: str
+    active: LivenessPolicy
+
+    def to_dict(self) -> dict:
+        a = self.active
+        return {
+            "accept_threshold": self.accept_threshold,
+            "reject_threshold": self.reject_threshold,
+            "on_passive_no_response": self.on_passive_no_response,
+            "active_enabled": a.enabled,
+            "min_challenges": a.min_challenges,
+            "challenge_pool": [x.value for x in a.challenge_pool],
+            "compound_challenges": a.compound_challenges,
+            "max_retries": a.max_retries,
+            "step_timeouts_s": [s.timeout_s for s in a.steps],
+        }
+
+
+def resolve_policy(engine_config, active_policy: LivenessPolicy, override: SessionPolicy | None) -> EffectivePolicy:
+    o = override or SessionPolicy()
+    accept = engine_config.decision.accept_threshold if o.accept_threshold is None else float(o.accept_threshold)
+    reject = engine_config.decision.reject_threshold if o.reject_threshold is None else float(o.reject_threshold)
+    if not (0.0 <= reject <= accept <= 1.0):
+        raise PolicyError(f"thresholds must satisfy 0 <= reject ({reject}) <= accept ({accept}) <= 1")
+    no_response = engine_config.hybrid.on_passive_no_response
+    if o.fail_on_passive_no_response is not None:
+        no_response = "fail" if o.fail_on_passive_no_response else "active"
+    try:
+        active = apply_overrides(active_policy, enabled=o.active_enabled, min_challenges=o.min_challenges,
+                                 challenge_pool=list(o.challenge_pool), compound_challenges=o.compound_challenges,
+                                 max_retries=o.max_retries, step_timeouts_s=list(o.step_timeouts_s))
+    except ActiveConfigError as e:
+        raise PolicyError(str(e)) from e
+    return EffectivePolicy(accept, reject, no_response, active)
+
+
 @dataclass(frozen=True)
 class HybridStarted:
     session_id: str
     workflow: Workflow
     frames_required: int
+    policy: dict = field(default_factory=dict)      # effective policy (EffectivePolicy.to_dict)
 
 
 @dataclass(frozen=True)
@@ -129,11 +196,15 @@ class HybridLivenessSession:
         active_analyzer_factory: Callable[[], FaceAnalyzer] | None = None,
         rng: random.Random | None = None,
         session_id: str | None = None,
+        policy: SessionPolicy | None = None,
     ):
         self.engine = engine
         self.cfg = engine.config.hybrid
         self.active_config = active_config
         self.workflow = workflow
+        self.policy = resolve_policy(engine.config, active_config.policy_for(workflow), policy)  # may raise
+        self._decision_cfg = DecisionConfig(self.policy.accept_threshold, self.policy.reject_threshold)
+        self._session_cfg = replace(engine.config, decision=self._decision_cfg)
         self.session_id = session_id or uuid.uuid4().hex
         self._rng = rng
         svc = active_config.service
@@ -152,10 +223,10 @@ class HybridLivenessSession:
 
     def start(self) -> list[HybridEvent]:
         self._require(HybridStatus.NOT_STARTED)
-        self._stream = self.engine.open_stream(include_frames=False)
+        self._stream = self.engine.open_stream(include_frames=False, decision=self._decision_cfg)
         self.status = HybridStatus.PASSIVE
-        self._audit("hybrid_started")
-        return [HybridStarted(self.session_id, self.workflow, self._stream.frames_required)]
+        self._audit("hybrid_started", policy=self.policy.to_dict())
+        return [HybridStarted(self.session_id, self.workflow, self._stream.frames_required, self.policy.to_dict())]
 
     def process_frame(self, rgb: np.ndarray, timestamp_ms: int) -> list[HybridEvent]:
         if self.status is HybridStatus.PASSIVE:
@@ -217,7 +288,7 @@ class HybridLivenessSession:
             events.append(PassiveVerdict(result, NextStep.ACCEPT))
             events.append(self._finish(HybridStatus.PASSED, HybridReason.PASSIVE_BONAFIDE,
                                        SUCCESS_MESSAGES[self.workflow]))
-        elif result.decision is Decision.NON_RESPONSE and self.cfg.on_passive_no_response == "fail":
+        elif result.decision is Decision.NON_RESPONSE and self.policy.on_passive_no_response == "fail":
             events.append(PassiveVerdict(result, NextStep.REJECT))
             events.append(self._finish(HybridStatus.FAILED, HybridReason.PASSIVE_NO_RESPONSE, FAILED_MESSAGE))
         else:
@@ -228,7 +299,7 @@ class HybridLivenessSession:
     # ------------------------------------------------------------ active phase
 
     def _start_active(self, passive_score: float | None) -> list[HybridEvent]:
-        policy = self.active_config.policy_for(self.workflow)
+        policy = self.policy.active
         if not policy.enabled:
             return [self._finish(HybridStatus.FAILED, HybridReason.ACTIVE_DISABLED, FAILED_MESSAGE)]
         self._analyzer = self._analyzer_factory()
@@ -246,7 +317,8 @@ class HybridLivenessSession:
             fa = self._stream.probe(rgb, ts)
             if fa is not None:
                 self._last_monitor_ts = ts
-                self._attack_run = self._attack_run + 1 if fa.decision is Decision.ATTACK else 0
+                attack = decide(fa.bonafide_probability, fa.quality.reasons, self._session_cfg) is Decision.ATTACK
+                self._attack_run = self._attack_run + 1 if attack else 0
                 events.append(MonitorResult(fa, self._attack_run))
                 if self._attack_run >= self.cfg.monitor_attack_frames:
                     events.append(self._finish(HybridStatus.FAILED, HybridReason.ATTACK_DETECTED_DURING_ACTIVE,

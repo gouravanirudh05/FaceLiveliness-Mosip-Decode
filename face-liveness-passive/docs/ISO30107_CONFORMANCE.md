@@ -38,7 +38,7 @@ Status legend:
 | PAI (presentation attack instrument) and PAI species | `PAISpecies` (print, screen replay, unspecified). The species is a *heuristic suggestion* (`cues.py`) and is labelled as such in every output | Partial |
 | Artefact PAIs: print, display/replay, masks | Print and replay: FSFM FAS model (trained on MSU-MFSD, CASIA-FASD, Idiap Replay-Attack, OULU-NPU), plus cues. Masks: only through the Unified model's generic "spoof" class. CASIA-FASD's cut-photo attacks are the only partial-mask data in training | Partial |
 | Human-based PAIs (lifeless, altered, non-conformant, coerced, conformant) | Non-conformant capture is handled by the quality gate. The rest is out of scope for passive image analysis; the active challenges (hybrid mode) address non-cooperative and static presentations | Partial |
-| Level of supervision | The resident, operator and supervisor workflows choose the active policy in hybrid mode. Passive thresholds are global, and per-workflow passive thresholds are not implemented | Partial |
+| Level of supervision | The resident, operator and supervisor workflows each have their own policy: passive accept/reject thresholds, active enablement, challenge count, pool, timeouts and retries (`SessionPolicy`, set from the Registration Client's global parameters per workflow) | Met |
 | Digital injection (deepfake / AI-generated face fed as video) | Reported as `attack_category = deepfake / synthetic` by the Unified model. Strictly this is *injection-attack* detection (see CEN/TS 18099), not PAD, so it is reported separately and not as a PAI species | Partial (out of 30107 scope) |
 
 ## ISO/IEC 30107-2 – data formats

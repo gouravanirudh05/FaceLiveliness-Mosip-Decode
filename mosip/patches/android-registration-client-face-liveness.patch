@@ -1,0 +1,3587 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 8e175588846a8a2ba2b19a33db5da720b3f21f2b..6ef5f8e7606c0e8a3fa728fc0a3823e0a0cd92e5 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -211,6 +211,8 @@ dependencies {
+         exclude group: 'org.bouncycastle'
+     }
+     implementation("io.mosip.biometric.util:biometrics-util:${rootProject.ext.biometricsUtilVersion}") {
++        // declared but unused by biometrics-util; clashes with MediaPipe's protobuf-javalite (face liveness)
++        exclude group: 'com.google.protobuf', module: 'protobuf-java'
+         exclude group: 'org.springframework.boot'
+         exclude group: 'org.springframework'
+         exclude group: 'org.springframework.cloud'
+@@ -235,6 +237,7 @@ dependencies {
+     implementation project(':keymanager')
+     implementation project(':packetmanager')
+     implementation project(':transliterationmanager')
++    implementation project(':livenessmanager')
+ 
+     androidTestImplementation "androidx.test.ext:junit:${rootProject.ext.androidxJunitVersion}"
+     androidTestImplementation "androidx.test.espresso:espresso-core:${rootProject.ext.espressoVersion}"
+diff --git a/android/app/src/main/java/io/mosip/registration_client/MainActivity.java b/android/app/src/main/java/io/mosip/registration_client/MainActivity.java
+index 27a9833b5a28d5267375df1ce04c228eaabacdbd..f35ba842454e26b10948634769cb1897cec3c249 100644
+--- a/android/app/src/main/java/io/mosip/registration_client/MainActivity.java
++++ b/android/app/src/main/java/io/mosip/registration_client/MainActivity.java
+@@ -70,6 +70,7 @@ import io.mosip.registration.keymanager.spi.ClientCryptoManagerService;
+ 
+ import io.mosip.registration.transliterationmanager.service.TransliterationServiceImpl;
+ import io.mosip.registration_client.api_services.AuditDetailsApi;
++import io.mosip.registration.livenessmanager.android.LivenessContract;
+ import io.mosip.registration_client.api_services.AuthenticationApi;
+ import io.mosip.registration_client.api_services.BiometricsDetailsApi;
+ import io.mosip.registration_client.api_services.CommonDetailsApi;
+@@ -425,6 +426,11 @@ public class MainActivity extends FlutterActivity {
+     @Override
+     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+         super.onActivityResult(requestCode, resultCode, data);
++        if (requestCode == LivenessContract.REQUEST_CODE) {
++            // Face liveness / PAD screen shown before the SBI face capture
++            biometricsDetailsApi.onLivenessResult(resultCode, data);
++            return;
++        }
+         if (resultCode == Activity.RESULT_OK) {
+             switch (requestCode) {
+                 case 1:
+diff --git a/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java b/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java
+index 640ac6611c4d9959742c108b5e281ab1625eb2ea..b8e8a61e79cdb059e4ee880c1c3dec004dd5c375 100644
+--- a/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java
++++ b/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java
+@@ -18,6 +18,9 @@ import android.widget.Toast;
+ 
+ import androidx.annotation.NonNull;
+ 
++import io.mosip.registration.livenessmanager.android.LivenessActivity;
++import io.mosip.registration.livenessmanager.android.LivenessContract;
++
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import com.fasterxml.jackson.databind.ObjectWriter;
+ import com.gemalto.jp2.JP2Decoder;
+@@ -109,6 +112,11 @@ public class BiometricsDetailsApi implements BiometricsPigeon.BiometricsApi {
+ 
+     private Modality currentDeviceListModality;
+ 
++    // ---------------------------------------------------------------- face liveness / PAD
++    private static final String LIVENESS = "mosip.registration.face.liveness.";
++    /** Failed liveness sessions per workflow + field (repeated-failure policy); cleared on a pass. */
++    private final java.util.Map<String, Integer> livenessFailures = new java.util.HashMap<>();
++
+ 
+ 
+ 
+@@ -136,8 +144,115 @@ public class BiometricsDetailsApi implements BiometricsPigeon.BiometricsApi {
+         auditManagerService.audit(AuditEvent.BIOMETRIC_CAPTURE, Components.REGISTRATION);
+         currentModality = getModality(modality);
+         this.fieldId = fieldId;
+-        discoverSBI();
+         biometricResult = result;
++        if (currentModality == Modality.FACE && livenessEnabled(livenessWorkflow())) {
++            startLiveness();            // the SBI capture continues in onLivenessResult() only if liveness passes
++            return;
++        }
++        discoverSBI();
++    }
++
++    /** Resident face capture uses the resident policy; operator onboarding (operatorBiometrics) the operator one. */
++    private String livenessWorkflow() {
++        return OPERATOR_BIOMETRICS.equals(fieldId) ? "operator" : "resident";
++    }
++
++    private String livenessParam(String workflow, String key) {
++        String v = globalParamRepository.getCachedStringGlobalParam(LIVENESS + workflow + "." + key);
++        if (v == null || v.trim().isEmpty()) v = globalParamRepository.getCachedStringGlobalParam(LIVENESS + key);
++        return v == null || v.trim().isEmpty() ? null : v.trim();
++    }
++
++    private static boolean yes(String v) {
++        return "Y".equalsIgnoreCase(v) || "true".equalsIgnoreCase(v) || "yes".equalsIgnoreCase(v);
++    }
++
++    private boolean livenessEnabled(String workflow) {
++        String all = globalParamRepository.getCachedStringGlobalParam(LIVENESS + "enable");
++        String wf = globalParamRepository.getCachedStringGlobalParam(LIVENESS + workflow + ".enable");
++        return (all == null || yes(all)) && (wf == null || yes(wf));
++    }
++
++    private void startLiveness() {
++        String wf = livenessWorkflow();
++        String key = wf + ":" + fieldId;
++        int failures = livenessFailures.getOrDefault(key, 0);
++        String maxSessions = livenessParam(wf, "repeated.failure.max.sessions");
++        String action = livenessParam(wf, "repeated.failure.action");
++        if ((action == null || "BLOCK".equalsIgnoreCase(action))
++                && failures >= (maxSessions == null ? 3 : Integer.parseInt(maxSessions))) {
++            auditManagerService.audit(AuditEvent.FACE_LIVENESS_BLOCKED, Components.REGISTRATION, wf);
++            biometricResult.success("LIVENESS_BLOCKED|Face verification could not be completed. "
++                    + "Please follow the applicable recovery process.");
++            return;
++        }
++        Intent intent = new Intent(activity, LivenessActivity.class);
++        intent.putExtra(LivenessContract.EXTRA_WORKFLOW, wf);
++        putDouble(intent, LivenessContract.EXTRA_ACCEPT, livenessParam(wf, "passive.threshold"));
++        putDouble(intent, LivenessContract.EXTRA_REJECT, livenessParam(wf, "passive.reject.threshold"));
++        String noResponse = livenessParam(wf, "passive.no.response.action");
++        if (noResponse != null) intent.putExtra(LivenessContract.EXTRA_FAIL_NO_RESPONSE, "FAIL".equalsIgnoreCase(noResponse));
++        String activeEnable = livenessParam(wf, "active.enable");
++        if (activeEnable != null) intent.putExtra(LivenessContract.EXTRA_ACTIVE_ENABLED, yes(activeEnable));
++        putInt(intent, LivenessContract.EXTRA_MIN_CHALLENGES, livenessParam(wf, "active.min.challenges"));
++        String types = livenessParam(wf, "active.challenge.types");
++        if (types != null) intent.putExtra(LivenessContract.EXTRA_CHALLENGE_TYPES, types);
++        String compound = livenessParam(wf, "active.compound.challenges");
++        if (compound != null) intent.putExtra(LivenessContract.EXTRA_COMPOUND, yes(compound));
++        putInt(intent, LivenessContract.EXTRA_MAX_RETRIES, livenessParam(wf, "active.max.retries"));
++        String timeouts = livenessParam(wf, "active.challenge.timeout.seconds");
++        if (timeouts != null) intent.putExtra(LivenessContract.EXTRA_TIMEOUTS, timeouts);
++        String retryDelay = livenessParam(wf, "retry.delay.ms");
++        if (retryDelay != null) intent.putExtra(LivenessContract.EXTRA_RETRY_DELAY_MS, Long.parseLong(retryDelay));
++        putInt(intent, LivenessContract.EXTRA_SESSION_TIMEOUT_S, livenessParam(wf, "session.timeout.seconds"));
++        activity.startActivityForResult(intent, LivenessContract.REQUEST_CODE);
++    }
++
++    private static void putDouble(Intent i, String extra, String v) {
++        if (v != null) i.putExtra(extra, Double.parseDouble(v));
++    }
++
++    private static void putInt(Intent i, String extra, String v) {
++        if (v != null) i.putExtra(extra, Integer.parseInt(v));
++    }
++
++    /** Result of the liveness screen: continue with the SBI capture only when liveness passed. */
++    public void onLivenessResult(int resultCode, Intent data) {
++        if (biometricResult == null) return;
++        String wf = livenessWorkflow();
++        String key = wf + ":" + fieldId;
++        String status = data == null ? "CANCELLED" : data.getStringExtra(LivenessContract.RESULT_STATUS);
++        String reason = data == null ? "" : data.getStringExtra(LivenessContract.RESULT_REASON);
++        boolean attack = data != null && data.getBooleanExtra(LivenessContract.RESULT_ATTACK, false);
++        // Diagnostic log: decision only (no images, landmarks or identities).
++        Log.i(TAG, "face liveness " + wf + ": " + status + " reason=" + reason
++                + (data != null && data.hasExtra(LivenessContract.RESULT_PASSIVE_SCORE)
++                ? " passiveScore=" + data.getDoubleExtra(LivenessContract.RESULT_PASSIVE_SCORE, -1) : "")
++                + (data != null ? " durationMs=" + data.getLongExtra(LivenessContract.RESULT_DURATION_MS, 0)
++                + " retries=" + data.getIntExtra(LivenessContract.RESULT_RETRIES, 0)
++                + " challenges=" + data.getIntExtra(LivenessContract.RESULT_CHALLENGES, 0) : ""));
++        if (LivenessContract.passed(resultCode, data)) {
++            auditManagerService.audit(AuditEvent.FACE_LIVENESS_PASSED, Components.REGISTRATION, wf);
++            livenessFailures.remove(key);
++            discoverSBI();
++            return;
++        }
++        if ("ENGINE_ERROR".equals(status)) {
++            auditManagerService.audit(AuditEvent.FACE_LIVENESS_ENGINE_ERROR, Components.REGISTRATION, reason);
++            if ("ALLOW".equalsIgnoreCase(livenessParam(wf, "engine.error.policy"))) {
++                Log.w(TAG, "face liveness engine error; capture ALLOWED by " + LIVENESS + "engine.error.policy");
++                discoverSBI();
++                return;
++            }
++        } else if (!"CANCELLED".equals(status)) {
++            auditManagerService.audit(attack ? AuditEvent.FACE_LIVENESS_PAD_FAILED : AuditEvent.FACE_LIVENESS_FAILED,
++                    Components.REGISTRATION, reason);
++            livenessFailures.put(key, livenessFailures.getOrDefault(key, 0) + 1);
++        }
++        String message = data == null ? null : data.getStringExtra(LivenessContract.RESULT_MESSAGE);
++        // "LIVENESS_<STATUS>|<user message>": the Flutter screens show the message and skip the SBI capture
++        biometricResult.success("LIVENESS_" + (status == null ? "FAILED" : status) + "|"
++                + (message == null ? "Face verification could not be completed. Please try again." : message));
+     }
+ 
+     @Override
+diff --git a/android/clientmanager/build.gradle b/android/clientmanager/build.gradle
+index f69299535fcc9c1ba131113bedc28c4e6a21bb15..0ffefa1745eb19a82fd66fb367efab5e3e0d104d 100644
+--- a/android/clientmanager/build.gradle
++++ b/android/clientmanager/build.gradle
+@@ -220,6 +220,8 @@ dependencies {
+     implementation "com.github.Tgo1014:JP2ForAndroid:${rootProject.ext.jp2ForAndroidVersion}"
+ 
+     implementation("io.mosip.biometric.util:biometrics-util:${rootProject.ext.biometricsUtilVersion}") {
++        // declared but unused by biometrics-util; clashes with MediaPipe's protobuf-javalite (face liveness)
++        exclude group: 'com.google.protobuf', module: 'protobuf-java'
+         exclude group: 'org.springframework.boot'
+         exclude group: 'org.springframework'
+         exclude group: 'org.springframework.data'
+diff --git a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/constant/AuditEvent.java b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/constant/AuditEvent.java
+index 21afce03678a634aa4cd6fb99f122971094ef2cf..e2cb8e0eebede56359ef258ded9fafd51415d148 100644
+--- a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/constant/AuditEvent.java
++++ b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/constant/AuditEvent.java
+@@ -194,6 +194,11 @@ public enum AuditEvent {
+     BIO_SDK_DEDUPE_MATCH("REG-EVT-097", SYSTEM_EVENT.getCode(), "BIO_SDK_DEDUPE_MATCH", "Biometric data matched with existing operator biometrics"),
+ 
+     // Center remap
++    FACE_LIVENESS_PASSED("REG-EVT-115", USER_EVENT.getCode(), "FACE_LIVENESS_PASSED", "Face liveness: verification passed"),
++    FACE_LIVENESS_FAILED("REG-EVT-116", USER_EVENT.getCode(), "FACE_LIVENESS_FAILED", "Face liveness: verification failed"),
++    FACE_LIVENESS_PAD_FAILED("REG-EVT-117", USER_EVENT.getCode(), "FACE_LIVENESS_PAD_FAILED", "Face liveness: presentation attack detected"),
++    FACE_LIVENESS_ENGINE_ERROR("REG-EVT-118", SYSTEM_EVENT.getCode(), "FACE_LIVENESS_ENGINE_ERROR", "Face liveness: liveness engine unavailable or failed"),
++    FACE_LIVENESS_BLOCKED("REG-EVT-119", USER_EVENT.getCode(), "FACE_LIVENESS_BLOCKED", "Face liveness: blocked after repeated failed verifications"),
+     MACHINE_REMAPPED("REG-REMAP-001", USER_EVENT.getCode(), "MACHINE_REMAPPED", "Machine has been remapped to a different center");
+ 
+     AuditEvent(String id, String type, String name, String description) {
+diff --git a/android/gradle.properties b/android/gradle.properties
+index 46f038bd09df8c45f66b521cef30d31b08bc952d..e8317b9340618ab8843316bd19c8699cd4650f3d 100644
+--- a/android/gradle.properties
++++ b/android/gradle.properties
+@@ -1,4 +1,4 @@
+-org.gradle.jvmargs=-Xmx1536M
++org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
+ android.useAndroidX=true
+ android.enableJetifier=true
+ android.jetifier.ignorelist = jackson-core, fastdoubleparser
+diff --git a/android/livenessmanager/build.gradle b/android/livenessmanager/build.gradle
+new file mode 100644
+index 0000000000000000000000000000000000000000..0184d13bf17523fdb9d4b01d6d505b52bc264111
+--- /dev/null
++++ b/android/livenessmanager/build.gradle
+@@ -0,0 +1,71 @@
++plugins {
++    id 'com.android.library'
++}
++
++apply from: '../jacoco.gradle'
++
++// On-device face liveness / PAD for the Android Registration Client: passive (FSFM ViT-B/16 via ONNX Runtime) and
++// active challenge-response (MediaPipe FaceLandmarker), ported from face-liveness-passive / face-liveness-active.
++android {
++    lintOptions {
++        abortOnError false
++        ignoreWarnings true
++    }
++    namespace 'io.mosip.registration.livenessmanager'
++    compileSdk rootProject.ext.compileSdkVersion
++
++    defaultConfig {
++        minSdk rootProject.ext.minSdkVersion
++        targetSdk rootProject.ext.targetSdkVersion
++        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
++        consumerProguardFiles "consumer-rules.pro"
++        versionCode 1
++        versionName '1.0'
++    }
++
++    buildTypes {
++        debug {
++            testCoverageEnabled true
++        }
++        release {
++            minifyEnabled false
++            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
++        }
++    }
++    compileOptions {
++        sourceCompatibility JavaVersion.VERSION_21
++        targetCompatibility JavaVersion.VERSION_21
++    }
++    buildToolsVersion buildToolsVersion
++
++    testOptions {
++        unitTests.all {
++            // Parity fixtures and ONNX models exported by face-liveness-passive/scripts/export_onnx.py
++            systemProperty 'liveness.onnx.dir',
++                    "${rootProject.rootDir}/../../../face-liveness-passive/models/onnx"
++            maxHeapSize = "3g"
++        }
++    }
++}
++
++// JVM unit tests use the desktop ONNX Runtime (same ai.onnxruntime API); keep the Android AAR off their classpath.
++configurations.configureEach {
++    if (name.toLowerCase().contains('unittest')) {
++        exclude group: 'com.microsoft.onnxruntime', module: 'onnxruntime-android'
++    }
++}
++
++dependencies {
++    implementation "androidx.appcompat:appcompat:${rootProject.ext.appcompatVersion}"
++    implementation "androidx.camera:camera-core:1.3.4"
++    implementation "androidx.camera:camera-camera2:1.3.4"
++    implementation "androidx.camera:camera-lifecycle:1.3.4"
++    implementation "androidx.camera:camera-view:1.3.4"
++    implementation "com.google.mediapipe:tasks-vision:1.0.0"
++    implementation "com.microsoft.onnxruntime:onnxruntime-android:1.30.0"
++
++    testImplementation "junit:junit:${rootProject.ext.junitVersion}"
++    // JVM build of the same ONNX Runtime, to check the exported models and the Java preprocessing on the desktop
++    testImplementation "com.microsoft.onnxruntime:onnxruntime:1.30.0"
++    androidTestImplementation "androidx.test.ext:junit:${rootProject.ext.androidxJunitVersion}"
++}
+diff --git a/android/livenessmanager/consumer-rules.pro b/android/livenessmanager/consumer-rules.pro
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/android/livenessmanager/proguard-rules.pro b/android/livenessmanager/proguard-rules.pro
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/android/livenessmanager/src/main/AndroidManifest.xml b/android/livenessmanager/src/main/AndroidManifest.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..b81bc7154573e903dc487e74db5a54e13269a8a9
+--- /dev/null
++++ b/android/livenessmanager/src/main/AndroidManifest.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android">
++
++    <uses-permission android:name="android.permission.CAMERA" />
++    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
++
++    <application>
++        <!-- Face liveness screen: CameraX preview, prompts, passive + active verification before SBI capture -->
++        <activity
++            android:name=".android.LivenessActivity"
++            android:exported="false"
++            android:screenOrientation="unspecified"
++            android:theme="@style/Theme.AppCompat.NoActionBar" />
++    </application>
++</manifest>
+diff --git a/android/livenessmanager/src/main/assets/liveness_models.json b/android/livenessmanager/src/main/assets/liveness_models.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab0dcd3bc0f22e12ae996ebafb4836d2e9f0c925
+--- /dev/null
++++ b/android/livenessmanager/src/main/assets/liveness_models.json
+@@ -0,0 +1,8 @@
++{
++  "version": "fsfm-vitb16-onnx-fp32-1",
++  "source": "face-liveness-passive/scripts/export_onnx.py (FSFM checkpoints Wolowolo/fsfm-3c, CC BY-NC 4.0)",
++  "files": {
++    "fsfm_unified.onnx": "106df6d0e0ac2965bb34f28c22e34d818582bba4ce125053b0893dda05ac1101",
++    "fsfm_fas.onnx": "d72fc2b612ae83a09fc629015f2af656690ce0f777ef4c53063749c85688196b"
++  }
++}
+\ No newline at end of file
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/ActivePolicy.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/ActivePolicy.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb919d063195fa6d882b17475255a297ac3fba29
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/ActivePolicy.java
+@@ -0,0 +1,128 @@
++package io.mosip.registration.livenessmanager.active;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.EnumMap;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * Active liveness policy (port of face-liveness-active {@code config.LivenessPolicy}); defaults equal
++ * face-liveness-active config/default.yaml.
++ */
++public final class ActivePolicy {
++
++    public enum Tier { EASY, MEDIUM, HARD }
++
++    public enum Action {
++        BLINK, SMILE, OPEN_MOUTH, TURN_LEFT, TURN_RIGHT, LOOK_UP, LOOK_DOWN, NOD, GAZE_LEFT, GAZE_RIGHT, GAZE_UP,
++        GAZE_DOWN;
++
++        /** The config / protocol name, e.g. "turn_left". */
++        public String code() { return name().toLowerCase(); }
++
++        public static Action fromCode(String code) {
++            return Action.valueOf(code.trim().toUpperCase());
++        }
++    }
++
++    public static final Map<Action, Tier> TIER_OF = new EnumMap<>(Action.class);
++    static final Map<Action, String> PHRASES = new EnumMap<>(Action.class);
++
++    static {
++        for (Action a : new Action[]{Action.BLINK, Action.SMILE, Action.OPEN_MOUTH}) TIER_OF.put(a, Tier.EASY);
++        for (Action a : new Action[]{Action.TURN_LEFT, Action.TURN_RIGHT, Action.LOOK_UP, Action.LOOK_DOWN}) {
++            TIER_OF.put(a, Tier.MEDIUM);
++        }
++        for (Action a : new Action[]{Action.NOD, Action.GAZE_LEFT, Action.GAZE_RIGHT, Action.GAZE_UP, Action.GAZE_DOWN}) {
++            TIER_OF.put(a, Tier.HARD);
++        }
++        PHRASES.put(Action.BLINK, "blink");
++        PHRASES.put(Action.SMILE, "smile");
++        PHRASES.put(Action.OPEN_MOUTH, "open your mouth");
++        PHRASES.put(Action.TURN_LEFT, "turn your head to the left");
++        PHRASES.put(Action.TURN_RIGHT, "turn your head to the right");
++        PHRASES.put(Action.LOOK_UP, "tilt your head up");
++        PHRASES.put(Action.LOOK_DOWN, "tilt your head down");
++        PHRASES.put(Action.NOD, "nod your head");
++        PHRASES.put(Action.GAZE_LEFT, "keep your head still and look to the left with your eyes");
++        PHRASES.put(Action.GAZE_RIGHT, "keep your head still and look to the right with your eyes");
++        PHRASES.put(Action.GAZE_UP, "keep your head still and look up with your eyes");
++        PHRASES.put(Action.GAZE_DOWN, "keep your head still and look down with your eyes");
++    }
++
++    public static final class StepParams {
++        public final double timeoutS, yawDeg, pitchDeg;
++
++        public StepParams(double timeoutS, double yawDeg, double pitchDeg) {
++            this.timeoutS = timeoutS;
++            this.yawDeg = yawDeg;
++            this.pitchDeg = pitchDeg;
++        }
++    }
++
++    public static final class Thresholds {
++        public double blinkClosed = 0.5, blinkOpen = 0.2, smile = 0.5, smileNeutral = 0.3, mouthOpen = 0.4,
++                mouthNeutral = 0.15, gazeHorizontal = 0.15, gazeVertical = 0.3, headStillDeg = 8, stabilityDeg = 3,
++                stabilityGaze = 0.05, nodReturnRatio = 0.5;
++        public int holdFrames = 3, neutralFrames = 3, maxInvalidFrames = 3;
++    }
++
++    public static final class Escalation {
++        public double passiveWeakThreshold = 0.5, defaultPassiveScore = 0.0, weakMargin = 0.15;
++        public int maxExtraChallenges = 2;
++    }
++
++    public boolean enabled = true;
++    public int minChallenges = 3;
++    public List<Action> challengePool = new ArrayList<>(Arrays.asList(Action.values()));
++    public boolean compoundChallenges = true;
++    public int maxRetries = 3;
++    public List<StepParams> steps = new ArrayList<>(Arrays.asList(
++            new StepParams(8, 15, 10), new StepParams(6, 20, 12), new StepParams(5, 25, 15)));
++    public Escalation escalation = new Escalation();
++    public Thresholds thresholds = new Thresholds();
++
++    public int maxAttempts() { return 1 + maxRetries; }
++
++    public StepParams stepParams(int stepIndex) { return steps.get(Math.min(stepIndex, steps.size() - 1)); }
++
++    /** Applies caller overrides (same semantics as the service's {@code apply_overrides}); null keeps the value. */
++    public ActivePolicy withOverrides(Boolean enabled, Integer minChallenges, List<String> pool, Boolean compound,
++                                      Integer maxRetries, List<Double> stepTimeoutsS) {
++        if (enabled != null) this.enabled = enabled;
++        if (minChallenges != null) {
++            if (minChallenges < 1) throw new IllegalArgumentException("min challenges must be >= 1");
++            this.minChallenges = minChallenges;
++        }
++        if (pool != null && !pool.isEmpty()) {
++            List<Action> p = new ArrayList<>();
++            for (String s : pool) {
++                Action a = Action.fromCode(s);
++                if (p.contains(a)) throw new IllegalArgumentException("duplicate challenge " + s);
++                p.add(a);
++            }
++            this.challengePool = p;
++        }
++        if (compound != null) this.compoundChallenges = compound;
++        if (maxRetries != null) {
++            if (maxRetries < 0) throw new IllegalArgumentException("max retries must be >= 0");
++            this.maxRetries = maxRetries;
++        }
++        if (stepTimeoutsS != null && !stepTimeoutsS.isEmpty()) {
++            int n = Math.max(stepTimeoutsS.size(), steps.size());
++            List<StepParams> s = new ArrayList<>();
++            for (int i = 0; i < n; i++) {
++                double t = stepTimeoutsS.get(Math.min(i, stepTimeoutsS.size() - 1));
++                if (t <= 0) throw new IllegalArgumentException("step timeouts must be > 0");
++                StepParams base = stepParams(i);
++                s.add(new StepParams(t, base.yawDeg, base.pitchDeg));
++            }
++            this.steps = s;
++        }
++        return this;
++    }
++
++    public List<Action> pool() { return Collections.unmodifiableList(challengePool); }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/ActiveSession.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/ActiveSession.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..818f4a784e4078f26de4926e8338abbf3b05ee42
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/ActiveSession.java
+@@ -0,0 +1,247 @@
++package io.mosip.registration.livenessmanager.active;
++
++import java.security.SecureRandom;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Random;
++import java.util.Set;
++
++import io.mosip.registration.livenessmanager.active.ActivePolicy.Action;
++import io.mosip.registration.livenessmanager.active.ActivePolicy.StepParams;
++import io.mosip.registration.livenessmanager.active.ActivePolicy.Tier;
++
++/**
++ * Active challenge-response session (port of face-liveness-active {@code session.py} and {@code challenges.py}):
++ * dynamic, unpredictable challenge selection; escalation by tier, per step, on weakness and on retry; timeouts from
++ * frame timestamps.
++ */
++public final class ActiveSession {
++
++    public enum Status { NOT_STARTED, RUNNING, RETRY_AVAILABLE, PASSED, FAILED, CANCELLED, DISABLED }
++
++    static final String SUCCESS_RESIDENT = "Good, face captured successfully";
++    static final String SUCCESS_OTHER = "Face verified successfully";
++    static final int COMPOUND_LENGTH = 2;
++
++    private final ActivePolicy policy;
++    private final boolean resident;
++    private final Double passiveScore;
++    private final Random rng;
++
++    public Status status = Status.NOT_STARTED;
++    private int attemptIndex = -1;
++    private List<Tier> tiers;
++    private int extras;
++    private Set<Action> used;
++    private int step;
++    private List<Action> challenge;
++    private long timeoutMs;
++    private Detectors.Detector detector;
++    private Long stepStartMs;
++    private int invalidRun;
++    private String lastFeedback;
++    private Long lastTs;
++    /** Every challenge issued (for audit and tests). */
++    public final List<List<Action>> history = new ArrayList<>();
++
++    public ActiveSession(ActivePolicy policy, boolean resident, Double passiveScore, Random rng) {
++        if (passiveScore != null && (passiveScore < 0 || passiveScore > 1)) {
++            throw new IllegalArgumentException("passiveScore must be within [0, 1]");
++        }
++        this.policy = policy;
++        this.resident = resident;
++        this.passiveScore = passiveScore;
++        this.rng = rng != null ? rng : new SecureRandom();
++    }
++
++    public List<LivenessEvent> start() {
++        require(Status.NOT_STARTED);
++        if (!policy.enabled) {
++            status = Status.DISABLED;
++            return List.of(LivenessEvent.decision(LivenessEvent.Status.FAILED, "LIVENESS_DISABLED",
++                    "Liveness verification is disabled", passiveScore));
++        }
++        return beginAttempt(0);
++    }
++
++    public List<LivenessEvent> retry() {
++        require(Status.RETRY_AVAILABLE);
++        return beginAttempt(attemptIndex + 1);
++    }
++
++    public List<LivenessEvent> cancel() {
++        status = Status.CANCELLED;
++        return List.of(LivenessEvent.decision(LivenessEvent.Status.CANCELLED, "CANCELLED",
++                LivenessEvent.CANCELLED_MESSAGE, passiveScore));
++    }
++
++    public List<Tier> plannedTiers() { return Collections.unmodifiableList(tiers); }
++
++    public List<LivenessEvent> process(FaceObservation obs) {
++        require(Status.RUNNING);
++        if (lastTs != null && obs.timestampMs <= lastTs) {
++            return List.of(LivenessEvent.feedback("Frame timestamps must be strictly increasing", 0));
++        }
++        lastTs = obs.timestampMs;
++        if (stepStartMs == null) stepStartMs = obs.timestampMs;
++        if (obs.timestampMs - stepStartMs > timeoutMs) return failStep("CHALLENGE_TIMEOUT");
++        if (obs.faceCount != 1) {
++            invalidRun++;
++            if (invalidRun > policy.thresholds.maxInvalidFrames) detector.reset();
++            return feedback(obs.faceCount == 0 ? "Keep your face within the capture area"
++                    : "Only one person should be in front of the camera", 0);
++        }
++        invalidRun = 0;
++        Detectors.Update u = detector.update(obs);
++        if (u.state == Detectors.State.WRONG_ACTION) return failStep("WRONG_ACTION");
++        if (u.state == Detectors.State.COMPLETED) return completeStep(u.margin);
++        if (u.hint == Detectors.Hint.HOLD_STILL) return feedback("Hold still and look at the camera", u.progress);
++        if (u.hint == Detectors.Hint.KEEP_HEAD_STILL) return feedback("Keep your head still", u.progress);
++        return feedback("Please continue", u.progress);
++    }
++
++    // ------------------------------------------------------------------ planning (challenges.py)
++
++    List<Tier> tiersForAttempt(int attemptIndex) {
++        int n = policy.minChallenges;
++        List<Tier> base = new ArrayList<>();
++        Tier[] order = {Tier.EASY, Tier.MEDIUM, Tier.HARD};
++        for (int i = 0; i < Math.min(n, 3); i++) base.add(order[i]);
++        for (int i = 3; i < n; i++) base.add(Tier.HARD);
++        List<Tier> out = new ArrayList<>();
++        for (Tier t : base) out.add(Tier.values()[Math.min(t.ordinal() + attemptIndex, Tier.HARD.ordinal())]);
++        if (passiveIsWeak() && policy.escalation.maxExtraChallenges > 0) out.add(Tier.HARD);
++        return out;
++    }
++
++    boolean passiveIsWeak() {
++        double score = passiveScore == null ? policy.escalation.defaultPassiveScore : passiveScore;
++        return score < policy.escalation.passiveWeakThreshold;
++    }
++
++    List<Action> pick(Tier tier, Set<Action> usedSet) {
++        for (Tier t : tierPreference(tier)) {
++            List<Object> options = options(t, usedSet);
++            if (!options.isEmpty()) {
++                Object o = options.get(rng.nextInt(options.size()));
++                if ("compound".equals(o)) {
++                    List<Action> parts = compoundParts(usedSet);
++                    Collections.shuffle(parts, rng);
++                    return new ArrayList<>(parts.subList(0, COMPOUND_LENGTH));
++                }
++                return List.of((Action) o);
++            }
++        }
++        if (!usedSet.isEmpty()) return pick(tier, new HashSet<>());
++        throw new IllegalStateException("challenge pool is empty");
++    }
++
++    private List<Tier> tierPreference(Tier tier) {
++        List<Tier> out = new ArrayList<>();
++        for (int t = tier.ordinal(); t <= Tier.HARD.ordinal(); t++) out.add(Tier.values()[t]);
++        for (int t = tier.ordinal() - 1; t >= 0; t--) out.add(Tier.values()[t]);
++        return out;
++    }
++
++    private List<Object> options(Tier tier, Set<Action> usedSet) {
++        List<Object> out = new ArrayList<>();
++        for (Action a : policy.challengePool) {
++            if (ActivePolicy.TIER_OF.get(a) == tier && !usedSet.contains(a)) out.add(a);
++        }
++        if (tier == Tier.HARD && policy.compoundChallenges && compoundParts(usedSet).size() >= COMPOUND_LENGTH) {
++            out.add("compound");
++        }
++        return out;
++    }
++
++    private List<Action> compoundParts(Set<Action> usedSet) {
++        List<Action> out = new ArrayList<>();
++        for (Action a : policy.challengePool) {
++            Tier t = ActivePolicy.TIER_OF.get(a);
++            if ((t == Tier.EASY || t == Tier.MEDIUM) && !usedSet.contains(a)) out.add(a);
++        }
++        return out;
++    }
++
++    static String prompt(List<Action> actions) {
++        StringBuilder sb = new StringBuilder("Please ");
++        for (int i = 0; i < actions.size(); i++) {
++            if (i > 0) sb.append(", then ");
++            sb.append(ActivePolicy.PHRASES.get(actions.get(i)));
++        }
++        return sb.toString();
++    }
++
++    // ------------------------------------------------------------------ session (session.py)
++
++    private List<LivenessEvent> beginAttempt(int index) {
++        attemptIndex = index;
++        status = Status.RUNNING;
++        tiers = tiersForAttempt(index);
++        extras = tiers.size() - policy.minChallenges;
++        used = new HashSet<>();
++        step = 0;
++        return List.of(beginStep());
++    }
++
++    private LivenessEvent beginStep() {
++        challenge = pick(tiers.get(step), used);
++        used.addAll(challenge);
++        history.add(challenge);
++        StepParams p = policy.stepParams(step);
++        timeoutMs = (long) (p.timeoutS * 1000);
++        detector = Detectors.forChallenge(challenge, p, policy.thresholds);
++        stepStartMs = null;
++        invalidRun = 0;
++        lastFeedback = null;
++        return LivenessEvent.challenge(prompt(challenge), timeoutMs, challenge).withSteps(step + 1, tiers.size());
++    }
++
++    private List<LivenessEvent> completeStep(double margin) {
++        List<LivenessEvent> events = new ArrayList<>();
++        events.add(LivenessEvent.feedback("Action detected", 1.0));
++        events.add(LivenessEvent.challengeResult(true, null));
++        ActivePolicy.Escalation esc = policy.escalation;
++        if (margin < esc.weakMargin && extras < esc.maxExtraChallenges) {
++            tiers.add(Tier.HARD);
++            extras++;
++        }
++        step++;
++        if (step < tiers.size()) {
++            events.add(beginStep());
++        } else {
++            status = Status.PASSED;
++            events.add(LivenessEvent.decision(LivenessEvent.Status.PASSED, "ACTIVE_PASSED",
++                    resident ? SUCCESS_RESIDENT : SUCCESS_OTHER, passiveScore));
++        }
++        return events;
++    }
++
++    private List<LivenessEvent> failStep(String reason) {
++        List<LivenessEvent> events = new ArrayList<>();
++        events.add(LivenessEvent.challengeResult(false, reason));
++        int remaining = policy.maxAttempts() - (attemptIndex + 1);
++        if (remaining > 0) {
++            status = Status.RETRY_AVAILABLE;
++            events.add(LivenessEvent.retry(remaining));
++        } else {
++            status = Status.FAILED;
++            events.add(LivenessEvent.decision(LivenessEvent.Status.FAILED, "ACTIVE_FAILED",
++                    LivenessEvent.MAX_RETRIES_MESSAGE, passiveScore));
++        }
++        return events;
++    }
++
++    private List<LivenessEvent> feedback(String text, double progress) {
++        String key = text + "|" + Math.round(progress * 10) / 10.0;
++        if (key.equals(lastFeedback)) return Collections.emptyList();
++        lastFeedback = key;
++        return List.of(LivenessEvent.feedback(text, progress));
++    }
++
++    private void require(Status s) {
++        if (status != s) throw new IllegalStateException("expected " + s + ", session is " + status);
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/Detectors.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/Detectors.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..75271f4549987137a61c88628d283856dbdbe8ab
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/Detectors.java
+@@ -0,0 +1,412 @@
++package io.mosip.registration.livenessmanager.active;
++
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.Deque;
++import java.util.EnumMap;
++import java.util.List;
++import java.util.Map;
++import java.util.function.ToDoubleFunction;
++
++import io.mosip.registration.livenessmanager.active.ActivePolicy.Action;
++import io.mosip.registration.livenessmanager.active.ActivePolicy.StepParams;
++import io.mosip.registration.livenessmanager.active.ActivePolicy.Thresholds;
++
++/**
++ * Per-action detectors (port of face-liveness-active {@code detectors.py}). Life cycle: WAITING_NEUTRAL (a stable,
++ * neutral baseline is required, so a static photo of a smiling or turned face cannot pass) -&gt; IN_PROGRESS
++ * (signal relative to the baseline) -&gt; COMPLETED or WRONG_ACTION (an opposite movement defeats blind replays).
++ */
++public final class Detectors {
++
++    public enum State { WAITING_NEUTRAL, IN_PROGRESS, COMPLETED, WRONG_ACTION }
++
++    public enum Hint { HOLD_STILL, KEEP_HEAD_STILL }
++
++    public static final class Update {
++        public final State state;
++        public final double progress;
++        public final double margin;
++        public final Hint hint;
++
++        Update(State state, double progress, double margin, Hint hint) {
++            this.state = state;
++            this.progress = progress;
++            this.margin = margin;
++            this.hint = hint;
++        }
++
++        static Update of(State s) { return new Update(s, 0, 0, null); }
++        static Update progress(double p) { return new Update(State.IN_PROGRESS, p, 0, null); }
++    }
++
++    public interface Detector {
++        Update update(FaceObservation obs);
++
++        void reset();
++    }
++
++    enum Feature { YAW, PITCH, GAZE_H, GAZE_UP, GAZE_DOWN }
++
++    static final Map<Feature, ToDoubleFunction<FaceObservation>> FEATURES = new EnumMap<>(Feature.class);
++
++    static {
++        FEATURES.put(Feature.YAW, o -> o.yawDeg);
++        FEATURES.put(Feature.PITCH, o -> o.pitchDeg);
++        FEATURES.put(Feature.GAZE_H, o -> o.gazeHorizontal);
++        FEATURES.put(Feature.GAZE_UP, FaceObservation::gazeUp);
++        FEATURES.put(Feature.GAZE_DOWN, FaceObservation::gazeDown);
++    }
++
++    static double clamp01(double x) { return Math.max(0.0, Math.min(1.0, x)); }
++
++    static double margin(double peak, double threshold) { return clamp01((peak - threshold) / threshold); }
++
++    /** Base class: neutral-baseline capture and terminal states. */
++    abstract static class Base implements Detector {
++        final Thresholds t;
++        Deque<FaceObservation> window;
++        Map<Feature, Double> baseline;
++        Update fin;
++        int hold;
++        double peak;
++
++        Base(Thresholds t) {
++            this.t = t;
++        }
++
++        List<Feature> stableFeatures() { return Collections.emptyList(); }
++
++        @Override
++        public void reset() {
++            window = new ArrayDeque<>();
++            baseline = null;
++            fin = null;
++            resetTracking();
++        }
++
++        @Override
++        public Update update(FaceObservation obs) {
++            if (fin != null) return fin;
++            if (baseline == null) {
++                if (!isNeutral(obs)) {
++                    window.clear();
++                    return new Update(State.WAITING_NEUTRAL, 0, 0, Hint.HOLD_STILL);
++                }
++                window.addLast(obs);
++                while (window.size() > t.neutralFrames) window.removeFirst();
++                if (window.size() < t.neutralFrames || !windowStable()) {
++                    return new Update(State.WAITING_NEUTRAL, 0, 0, Hint.HOLD_STILL);
++                }
++                baseline = new EnumMap<>(Feature.class);
++                for (Map.Entry<Feature, ToDoubleFunction<FaceObservation>> e : FEATURES.entrySet()) {
++                    double s = 0;
++                    for (FaceObservation o : window) s += e.getValue().applyAsDouble(o);
++                    baseline.put(e.getKey(), s / window.size());
++                }
++                return Update.progress(0.0);
++            }
++            Update r = track(obs);
++            if (r.state == State.COMPLETED || r.state == State.WRONG_ACTION) fin = r;
++            return r;
++        }
++
++        boolean windowStable() {
++            for (Feature f : stableFeatures()) {
++                double min = Double.MAX_VALUE, max = -Double.MAX_VALUE;
++                for (FaceObservation o : window) {
++                    double v = FEATURES.get(f).applyAsDouble(o);
++                    min = Math.min(min, v);
++                    max = Math.max(max, v);
++                }
++                double limit = (f == Feature.YAW || f == Feature.PITCH) ? t.stabilityDeg : t.stabilityGaze;
++                if (max - min > limit) return false;
++            }
++            return true;
++        }
++
++        double delta(FaceObservation obs, Feature f) {
++            return FEATURES.get(f).applyAsDouble(obs) - baseline.get(f);
++        }
++
++        Update holdUpdate(boolean active, double value, double threshold) {
++            if (active) {
++                hold++;
++                peak = Math.max(peak, value);
++                if (hold >= t.holdFrames) return new Update(State.COMPLETED, 1.0, margin(peak, threshold), null);
++                return Update.progress(0.8 + 0.2 * hold / t.holdFrames);
++            }
++            hold = 0;
++            peak = 0.0;
++            return Update.progress(0.8 * clamp01(value / threshold));
++        }
++
++        void resetTracking() {
++            hold = 0;
++            peak = 0.0;
++        }
++
++        abstract boolean isNeutral(FaceObservation obs);
++
++        abstract Update track(FaceObservation obs);
++    }
++
++    /** Smile / open mouth: blendshape rises from below `neutral` to above `threshold`. */
++    static final class Expression extends Base {
++        private final ToDoubleFunction<FaceObservation> signal;
++        private final double threshold, neutral;
++
++        Expression(Thresholds t, ToDoubleFunction<FaceObservation> signal, double threshold, double neutral) {
++            super(t);
++            this.signal = signal;
++            this.threshold = threshold;
++            this.neutral = neutral;
++            reset();
++        }
++
++        @Override
++        boolean isNeutral(FaceObservation o) { return signal.applyAsDouble(o) < neutral; }
++
++        @Override
++        Update track(FaceObservation o) {
++            double v = signal.applyAsDouble(o);
++            return holdUpdate(v >= threshold, v, threshold);
++        }
++    }
++
++    /** Eyes open -> closed -> open. */
++    static final class Blink extends Base {
++        private boolean closedSeen;
++
++        Blink(Thresholds t) {
++            super(t);
++            reset();
++        }
++
++        @Override
++        void resetTracking() {
++            closedSeen = false;
++            peak = 0.0;
++        }
++
++        @Override
++        boolean isNeutral(FaceObservation o) { return o.blink() < t.blinkOpen; }
++
++        @Override
++        Update track(FaceObservation o) {
++            double v = o.blink();
++            if (v >= t.blinkClosed) {
++                closedSeen = true;
++                peak = Math.max(peak, v);
++                return Update.progress(0.6);
++            }
++            if (closedSeen && v < t.blinkOpen) return new Update(State.COMPLETED, 1.0, margin(peak, t.blinkClosed), null);
++            if (closedSeen) return Update.progress(0.8);
++            return Update.progress(0.5 * clamp01(v / t.blinkClosed));
++        }
++    }
++
++    /** Head yaw or pitch moves by `angle` in `sign` direction; the opposite is WRONG_ACTION. */
++    static final class HeadTurn extends Base {
++        private final Feature feature;
++        private final int sign;
++        private final double angle;
++
++        HeadTurn(Thresholds t, Feature feature, int sign, double angle) {
++            super(t);
++            this.feature = feature;
++            this.sign = sign;
++            this.angle = angle;
++            reset();
++        }
++
++        @Override
++        List<Feature> stableFeatures() { return List.of(Feature.YAW, Feature.PITCH); }
++
++        @Override
++        boolean isNeutral(FaceObservation o) { return true; }
++
++        @Override
++        Update track(FaceObservation o) {
++            double d = delta(o, feature) * sign;
++            if (d <= -angle) return Update.of(State.WRONG_ACTION);
++            return holdUpdate(d >= angle, d, angle);
++        }
++    }
++
++    /** Pitch dips down by `angle`, then comes back up at least `nodReturnRatio` of the dip. */
++    static final class Nod extends Base {
++        private final double angle;
++        private double dip;
++
++        Nod(Thresholds t, double angle) {
++            super(t);
++            this.angle = angle;
++            reset();
++        }
++
++        @Override
++        List<Feature> stableFeatures() { return List.of(Feature.YAW, Feature.PITCH); }
++
++        @Override
++        void resetTracking() { dip = 0.0; }
++
++        @Override
++        boolean isNeutral(FaceObservation o) { return true; }
++
++        @Override
++        Update track(FaceObservation o) {
++            double down = -delta(o, Feature.PITCH);
++            if (down >= angle || dip != 0.0) {
++                dip = Math.max(dip, down);
++                if (down <= dip * t.nodReturnRatio) return new Update(State.COMPLETED, 1.0, margin(dip, angle), null);
++                return Update.progress(0.6);
++            }
++            return Update.progress(0.5 * clamp01(down / angle));
++        }
++    }
++
++    /** Eyes move while the head stays within `headStillDeg` of its baseline. */
++    abstract static class Gaze extends Base {
++        Gaze(Thresholds t) {
++            super(t);
++        }
++
++        @Override
++        boolean isNeutral(FaceObservation o) { return o.blink() < t.blinkClosed; }
++
++        boolean headMoved(FaceObservation o) {
++            return Math.abs(delta(o, Feature.YAW)) > t.headStillDeg || Math.abs(delta(o, Feature.PITCH)) > t.headStillDeg;
++        }
++
++        abstract double threshold();
++
++        abstract double[] signals(FaceObservation o);   // {toward, away}
++
++        boolean eyesOk(FaceObservation o) { return true; }
++
++        @Override
++        Update track(FaceObservation o) {
++            if (headMoved(o)) {
++                hold = 0;
++                peak = 0.0;
++                return new Update(State.IN_PROGRESS, 0.0, 0, Hint.KEEP_HEAD_STILL);
++            }
++            double[] s = signals(o);
++            double thr = threshold();
++            if (s[1] >= thr) return Update.of(State.WRONG_ACTION);
++            return holdUpdate(s[0] >= thr && eyesOk(o), s[0], thr);
++        }
++    }
++
++    static final class GazeHorizontal extends Gaze {
++        private final int sign;
++
++        GazeHorizontal(Thresholds t, int sign) {
++            super(t);
++            this.sign = sign;
++            reset();
++        }
++
++        @Override
++        List<Feature> stableFeatures() { return List.of(Feature.YAW, Feature.PITCH, Feature.GAZE_H); }
++
++        @Override
++        double threshold() { return t.gazeHorizontal; }
++
++        @Override
++        double[] signals(FaceObservation o) {
++            double d = delta(o, Feature.GAZE_H) * sign;
++            return new double[]{d, -d};
++        }
++    }
++
++    static final class GazeVertical extends Gaze {
++        private final boolean up;
++
++        GazeVertical(Thresholds t, boolean up) {
++            super(t);
++            this.up = up;
++            reset();
++        }
++
++        @Override
++        List<Feature> stableFeatures() { return List.of(Feature.YAW, Feature.PITCH, Feature.GAZE_UP, Feature.GAZE_DOWN); }
++
++        @Override
++        double threshold() { return t.gazeVertical; }
++
++        @Override
++        double[] signals(FaceObservation o) {
++            double u = delta(o, Feature.GAZE_UP), d = delta(o, Feature.GAZE_DOWN);
++            return up ? new double[]{u, d} : new double[]{d, u};
++        }
++
++        @Override
++        boolean eyesOk(FaceObservation o) { return o.blink() < t.blinkClosed; }   // closed eyes are not a gaze
++    }
++
++    /** Runs several detectors strictly in order; fails as soon as any part fails. */
++    static final class Compound implements Detector {
++        private final List<Detector> parts;
++        private int index;
++        private List<Double> margins;
++
++        Compound(List<Detector> parts) {
++            this.parts = parts;
++            reset();
++        }
++
++        @Override
++        public void reset() {
++            for (Detector p : parts) p.reset();
++            index = 0;
++            margins = new ArrayList<>();
++        }
++
++        @Override
++        public Update update(FaceObservation obs) {
++            int n = parts.size();
++            if (index >= n) return new Update(State.COMPLETED, 1.0, Collections.min(margins), null);
++            Update u = parts.get(index).update(obs);
++            if (u.state == State.WRONG_ACTION) return u;
++            if (u.state == State.COMPLETED) {
++                margins.add(u.margin);
++                index++;
++                if (index == n) return new Update(State.COMPLETED, 1.0, Collections.min(margins), null);
++                return Update.progress((double) index / n);
++            }
++            State s = (index == 0 && u.state == State.WAITING_NEUTRAL) ? State.WAITING_NEUTRAL : State.IN_PROGRESS;
++            return new Update(s, (index + u.progress) / n, 0, u.hint);
++        }
++    }
++
++    static Detector create(Action a, StepParams step, Thresholds t) {
++        switch (a) {
++            case BLINK: return new Blink(t);
++            case SMILE: return new Expression(t, FaceObservation::smile, t.smile, t.smileNeutral);
++            case OPEN_MOUTH: return new Expression(t, FaceObservation::jawOpen, t.mouthOpen, t.mouthNeutral);
++            case TURN_LEFT: return new HeadTurn(t, Feature.YAW, +1, step.yawDeg);
++            case TURN_RIGHT: return new HeadTurn(t, Feature.YAW, -1, step.yawDeg);
++            case LOOK_UP: return new HeadTurn(t, Feature.PITCH, +1, step.pitchDeg);
++            case LOOK_DOWN: return new HeadTurn(t, Feature.PITCH, -1, step.pitchDeg);
++            case NOD: return new Nod(t, step.pitchDeg);
++            case GAZE_LEFT: return new GazeHorizontal(t, +1);
++            case GAZE_RIGHT: return new GazeHorizontal(t, -1);
++            case GAZE_UP: return new GazeVertical(t, true);
++            case GAZE_DOWN: return new GazeVertical(t, false);
++            default: throw new IllegalArgumentException("unsupported action " + a);
++        }
++    }
++
++    public static Detector forChallenge(List<Action> actions, StepParams step, Thresholds t) {
++        if (actions.size() == 1) return create(actions.get(0), step, t);
++        List<Detector> parts = new ArrayList<>();
++        for (Action a : actions) parts.add(create(a, step, t));
++        return new Compound(parts);
++    }
++
++    private Detectors() {
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/FaceObservation.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/FaceObservation.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a7278463df76950e7b661cc8c0e7b046396a744
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/FaceObservation.java
+@@ -0,0 +1,67 @@
++package io.mosip.registration.livenessmanager.active;
++
++import java.util.Collections;
++import java.util.Map;
++
++/**
++ * What the action detectors need from one analysed frame (port of face-liveness-active {@code FaceObservation}).
++ * Angles in degrees, camera frame: yaw &gt; 0 = face points to the subject's left, pitch &gt; 0 = up.
++ * {@code gazeHorizontal} in [-1, 1], &gt; 0 = eyes look to the subject's left.
++ */
++public final class FaceObservation {
++    public final long timestampMs;
++    public final int faceCount;
++    public final Map<String, Float> blendshapes;
++    public final double yawDeg, pitchDeg, rollDeg, gazeHorizontal;
++
++    public FaceObservation(long timestampMs, int faceCount, Map<String, Float> blendshapes, double yawDeg,
++                           double pitchDeg, double rollDeg, double gazeHorizontal) {
++        this.timestampMs = timestampMs;
++        this.faceCount = faceCount;
++        this.blendshapes = blendshapes == null ? Collections.emptyMap() : blendshapes;
++        this.yawDeg = yawDeg;
++        this.pitchDeg = pitchDeg;
++        this.rollDeg = rollDeg;
++        this.gazeHorizontal = gazeHorizontal;
++    }
++
++    public static FaceObservation noFace(long ts, int count) {
++        return new FaceObservation(ts, count, null, 0, 0, 0, 0);
++    }
++
++    private double mean(String a, String b) {
++        return (blendshapes.getOrDefault(a, 0f) + blendshapes.getOrDefault(b, 0f)) / 2.0;
++    }
++
++    public double blink() { return mean("eyeBlinkLeft", "eyeBlinkRight"); }
++    public double smile() { return mean("mouthSmileLeft", "mouthSmileRight"); }
++    public double jawOpen() { return blendshapes.getOrDefault("jawOpen", 0f); }
++    public double gazeUp() { return mean("eyeLookUpLeft", "eyeLookUpRight"); }
++    public double gazeDown() { return mean("eyeLookDownLeft", "eyeLookDownRight"); }
++
++    /** Pose from MediaPipe's 4x4 facial transformation matrix (column-major, as MediaPipe Android returns it). */
++    public static double[] poseFromMatrix(float[] m) {
++        // r[row][col] = m[col * 4 + row]; column 2 of the rotation = direction the face points
++        double fx = m[2 * 4], fy = m[2 * 4 + 1], fz = m[2 * 4 + 2];
++        double r00 = m[0], r10 = m[1];
++        double yaw = Math.toDegrees(Math.atan2(fx, fz));
++        double pitch = Math.toDegrees(Math.atan2(fy, Math.hypot(fx, fz)));
++        double roll = Math.toDegrees(Math.atan2(r10, r00));
++        return new double[]{yaw, pitch, roll};
++    }
++
++    /** Mean iris position across both eyes in [-1, 1]; &gt; 0 = towards image right. xs = landmark x coordinates. */
++    public static double gazeHorizontal(float[] xs) {
++        int[][] eyes = {{33, 133, 468}, {362, 263, 473}};
++        double sum = 0;
++        int n = 0;
++        for (int[] e : eyes) {
++            double width = xs[e[1]] - xs[e[0]];
++            if (Math.abs(width) < 1e-6) continue;
++            sum += (xs[e[2]] - xs[e[0]]) / width;
++            n++;
++        }
++        if (n == 0) return 0.0;
++        return Math.max(-1.0, Math.min(1.0, (sum / n - 0.5) * 2.0));
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/LivenessEvent.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/LivenessEvent.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..87b3840ba78e5fe7b2dc9ece6cf96773651cae41
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/active/LivenessEvent.java
+@@ -0,0 +1,113 @@
++package io.mosip.registration.livenessmanager.active;
++
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.List;
++
++/**
++ * Progress and result events of a liveness session, for the capture screen and the audit trail. Texts are the
++ * spec's user messages; they never mention attack detection (spec 10.6).
++ */
++public final class LivenessEvent {
++
++    public enum Kind { CHECKING, CHALLENGE, FEEDBACK, CHALLENGE_RESULT, RETRY, DECISION }
++
++    public enum Status { PASSED, FAILED, CANCELLED }
++
++    public static final String CHECKING_TEXT = "Checking face liveness…";
++    public static final String RETRY_MESSAGE = "We could not verify face liveness. Please try again.";
++    public static final List<String> RETRY_GUIDANCE = Collections.unmodifiableList(Arrays.asList(
++            "Look directly at the camera.", "Ensure your face is clearly visible.", "Improve lighting.",
++            "Keep your face within the capture area.", "Follow the prompted action."));
++    public static final String MAX_RETRIES_MESSAGE =
++            "Face verification could not be completed. Please follow the applicable recovery process.";
++    public static final String FAILED_MESSAGE = MAX_RETRIES_MESSAGE;
++    public static final String ENGINE_ERROR_MESSAGE = "Face verification could not be completed. Please try again.";
++    public static final String CANCELLED_MESSAGE = "Face verification was cancelled";
++
++    public final Kind kind;
++    public final String text;
++    public final double progress;
++    public final List<String> guidance;
++    public final long timeoutMs;
++    public final int retriesRemaining;
++    public final boolean passed;
++    public final Status status;
++    /** Machine-readable reason for audit (e.g. ATTACK_DETECTED); never shown to the user. */
++    public final String reason;
++    public final Double passiveScore;
++    public final List<ActivePolicy.Action> actions;
++    /** CHALLENGE only: 1-based step and number of steps in this attempt (may grow by escalation); else 0. */
++    public int step;
++    public int totalSteps;
++
++    private LivenessEvent(Kind kind, String text, double progress, List<String> guidance, long timeoutMs,
++                          int retriesRemaining, boolean passed, Status status, String reason, Double passiveScore,
++                          List<ActivePolicy.Action> actions) {
++        this.kind = kind;
++        this.text = text == null ? "" : text;
++        this.progress = progress;
++        this.guidance = guidance == null ? Collections.emptyList() : guidance;
++        this.timeoutMs = timeoutMs;
++        this.retriesRemaining = retriesRemaining;
++        this.passed = passed;
++        this.status = status;
++        this.reason = reason;
++        this.passiveScore = passiveScore;
++        this.actions = actions == null ? Collections.emptyList() : actions;
++    }
++
++    public static LivenessEvent checking(double progress, List<String> guidance) {
++        return new LivenessEvent(Kind.CHECKING, CHECKING_TEXT, progress, guidance, 0, -1, false, null, null, null, null);
++    }
++
++    public static LivenessEvent challenge(String prompt, long timeoutMs, List<ActivePolicy.Action> actions) {
++        return new LivenessEvent(Kind.CHALLENGE, prompt, 0, null, timeoutMs, -1, false, null, null, null, actions);
++    }
++
++    LivenessEvent withSteps(int step, int totalSteps) {
++        this.step = step;
++        this.totalSteps = totalSteps;
++        return this;
++    }
++
++    /** "Step 2 of 3 · 6 s": challenge progress and time limit (same text as the desktop client). */
++    public String challengeLine() {
++        String time = Math.max(1, timeoutMs / 1000) + " s";
++        return totalSteps > 0 ? "Step " + step + " of " + totalSteps + " \u00b7 " + time : time;
++    }
++
++    /** Spec 10.7: say clearly that a retry is available, and how many are left (same text as the desktop client). */
++    public static String retryLine(int retriesRemaining) {
++        if (retriesRemaining < 0) return "Retrying…";
++        return "Retry available \u2013 starting again shortly"
++                + (retriesRemaining == 0 ? " (last attempt)." : " (" + retriesRemaining + " more after this).");
++    }
++
++    public static LivenessEvent feedback(String text, double progress) {
++        return new LivenessEvent(Kind.FEEDBACK, text, progress, null, 0, -1, false, null, null, null, null);
++    }
++
++    public static LivenessEvent challengeResult(boolean passed, String reason) {
++        return new LivenessEvent(Kind.CHALLENGE_RESULT, passed ? "Action detected" : reason, passed ? 1 : 0, null, 0,
++                -1, passed, null, reason, null, null);
++    }
++
++    public static LivenessEvent retry(int remaining) {
++        return new LivenessEvent(Kind.RETRY, RETRY_MESSAGE, 0, RETRY_GUIDANCE, 0, remaining, false, null, null, null, null);
++    }
++
++    public static LivenessEvent decision(Status status, String reason, String message, Double passiveScore) {
++        return new LivenessEvent(Kind.DECISION, message, status == Status.PASSED ? 1 : 0, null, 0, -1,
++                status == Status.PASSED, status, reason, passiveScore, null);
++    }
++
++    public boolean isAttack() {
++        return "ATTACK_DETECTED".equals(reason) || "ATTACK_DETECTED_DURING_ACTIVE".equals(reason);
++    }
++
++    @Override
++    public String toString() {
++        return kind + (status != null ? "/" + status : "") + ": " + text + (reason != null ? " [" + reason + "]" : "");
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessActivity.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessActivity.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c0998bd8da2a9e6200f6131d9dc4760efcc00c3
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessActivity.java
+@@ -0,0 +1,363 @@
++package io.mosip.registration.livenessmanager.android;
++
++import android.Manifest;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.graphics.Bitmap;
++import android.graphics.Canvas;
++import android.graphics.Color;
++import android.graphics.DashPathEffect;
++import android.graphics.Matrix;
++import android.graphics.Paint;
++import android.graphics.RectF;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.Looper;
++import android.util.Log;
++import android.view.Gravity;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.FrameLayout;
++import android.widget.LinearLayout;
++import android.widget.ProgressBar;
++import android.widget.TextView;
++
++import androidx.annotation.NonNull;
++import androidx.appcompat.app.AppCompatActivity;
++import androidx.camera.core.CameraSelector;
++import androidx.camera.core.ImageAnalysis;
++import androidx.camera.core.ImageProxy;
++import androidx.camera.core.Preview;
++import androidx.camera.lifecycle.ProcessCameraProvider;
++import androidx.camera.view.PreviewView;
++import androidx.core.app.ActivityCompat;
++import androidx.core.content.ContextCompat;
++
++import com.google.common.util.concurrent.ListenableFuture;
++
++import java.security.SecureRandom;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
++
++import io.mosip.registration.livenessmanager.active.LivenessEvent;
++import io.mosip.registration.livenessmanager.core.HybridSession;
++import io.mosip.registration.livenessmanager.core.OnnxClassifier;
++import io.mosip.registration.livenessmanager.core.Passive;
++
++/**
++ * On-device face liveness screen (spec 10.1-10.7) shown before the SBI face capture: live preview with a positioning
++ * oval, "Checking face liveness…", system-selected challenge prompts, real-time feedback, retry guidance and the
++ * result. Runs passive PAD (FSFM via ONNX Runtime) and active challenges (MediaPipe) entirely on the device, so it
++ * works offline. Returns the decision to the caller (see {@link LivenessContract}).
++ */
++public class LivenessActivity extends AppCompatActivity {
++
++    private static final String TAG = "LivenessActivity";
++    private static final int CAMERA_PERMISSION = 7;
++
++    private PreviewView preview;
++    private TextView status, guidance;
++    private ProgressBar progress;
++    private OvalView oval;
++
++    private final Handler ui = new Handler(Looper.getMainLooper());
++    private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
++    private final ExecutorService padExecutor = Executors.newSingleThreadExecutor();
++
++    private MediaPipeFaces faces;
++    private List<Passive.Classifier> models;
++    private HybridSession session;
++    private Passive.Config passiveConfig;
++    private long retryDelayMs = 3000;
++    private long sessionTimeoutMs = 180_000;
++    private long startMs;
++    private long lastTs = -1;
++    private Future<Passive.FrameResult> monitorPad;
++    private volatile boolean finished;
++    private volatile long retryAtMs = -1;
++    private int retries, challenges;
++    private String currentPrompt = "";
++    private boolean resident;
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        buildUi();
++        String workflow = getIntent().getStringExtra(LivenessContract.EXTRA_WORKFLOW);
++        resident = !"operator".equals(workflow) && !"supervisor".equals(workflow);
++        retryDelayMs = getIntent().getLongExtra(LivenessContract.EXTRA_RETRY_DELAY_MS, 3000);
++        sessionTimeoutMs = 1000L * getIntent().getIntExtra(LivenessContract.EXTRA_SESSION_TIMEOUT_S, 180);
++        show("Preparing face liveness…", "", 0);
++        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
++            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
++        } else {
++            prepare();
++        }
++    }
++
++    @Override
++    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] results) {
++        super.onRequestPermissionsResult(requestCode, permissions, results);
++        if (requestCode == CAMERA_PERMISSION && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
++            prepare();
++        } else {
++            finishWith("ENGINE_ERROR", "CAMERA_PERMISSION_DENIED", LivenessEvent.ENGINE_ERROR_MESSAGE, null, false);
++        }
++    }
++
++    /** Loads the engine off the UI thread, then starts the camera. */
++    private void prepare() {
++        analysisExecutor.execute(() -> {
++            try {
++                HybridSession.Settings settings = LivenessContract.settings(getIntent());
++                passiveConfig = settings.passive;
++                ModelStore store = new ModelStore(this);
++                if (!store.ensureInstalled()) {
++                    finishWith("ENGINE_ERROR", "MODELS_NOT_PROVISIONED", LivenessEvent.ENGINE_ERROR_MESSAGE, null, false);
++                    return;
++                }
++                int threads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
++                models = new ArrayList<>();
++                models.add(new OnnxClassifier(Passive.UNIFIED, store.file("fsfm_unified.onnx").getPath(), threads));
++                models.add(new OnnxClassifier(Passive.FAS, store.file("fsfm_fas.onnx").getPath(), threads));
++                faces = new MediaPipeFaces(this);
++                session = new HybridSession(settings, models, resident, new SecureRandom());
++                startMs = System.currentTimeMillis();
++                post(session.start());
++                ui.post(this::startCamera);
++            } catch (Throwable t) {
++                Log.e(TAG, "liveness engine failed to start", t);
++                finishWith("ENGINE_ERROR", "ENGINE_START_FAILED: " + t.getMessage(), LivenessEvent.ENGINE_ERROR_MESSAGE,
++                        null, false);
++            }
++        });
++    }
++
++    private void startCamera() {
++        ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
++        future.addListener(() -> {
++            try {
++                ProcessCameraProvider provider = future.get();
++                Preview p = new Preview.Builder().build();
++                p.setSurfaceProvider(preview.getSurfaceProvider());
++                ImageAnalysis analysis = new ImageAnalysis.Builder()
++                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
++                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
++                        .build();
++                analysis.setAnalyzer(analysisExecutor, this::analyse);
++                CameraSelector selector = provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
++                        ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA;
++                provider.unbindAll();
++                provider.bindToLifecycle(this, selector, p, analysis);
++            } catch (Exception e) {
++                Log.e(TAG, "camera unavailable", e);
++                finishWith("ENGINE_ERROR", "CAMERA_UNAVAILABLE", "Camera unavailable. Please check the camera and try again.",
++                        null, false);
++            }
++        }, ContextCompat.getMainExecutor(this));
++    }
++
++    /** Camera frame -> MediaPipe -> (PAD) -> hybrid session. Runs on the analysis thread. */
++    private void analyse(ImageProxy image) {
++        try {
++            if (finished || session == null) return;
++            long ts = image.getImageInfo().getTimestamp() / 1_000_000L;
++            if (ts <= lastTs) ts = lastTs + 1;
++            lastTs = ts;
++            if (System.currentTimeMillis() - startMs > sessionTimeoutMs) {
++                finishWith("FAILED", "SESSION_TIMEOUT", LivenessEvent.FAILED_MESSAGE, null, false);
++                return;
++            }
++            if (retryAtMs > 0 && System.currentTimeMillis() >= retryAtMs && session.retryAvailable()) {
++                retryAtMs = -1;
++                post(session.retry());
++            }
++            Bitmap upright = upright(image);
++            MediaPipeFaces.Frame frame = faces.analyse(upright, ts);
++            Passive.FrameResult pad = null;
++            if (session.phase() == HybridSession.Phase.PASSIVE) {
++                if (session.needsPad(ts)) pad = Passive.analyse(rgb(upright), upright.getWidth(), upright.getHeight(),
++                        frame.faces, ts, models, passiveConfig);
++            } else if (monitorPad != null && monitorPad.isDone()) {
++                pad = monitorPad.get();                       // PAD monitoring result of an earlier frame
++                monitorPad = null;
++            } else if (monitorPad == null && session.needsPad(ts)) {
++                final byte[] rgb = rgb(upright);
++                final int w = upright.getWidth(), h = upright.getHeight();
++                final List<Passive.Face> f = frame.faces;
++                final long t = ts;
++                monitorPad = padExecutor.submit(() -> Passive.analyse(rgb, w, h, f, t, models, passiveConfig));
++            }
++            post(session.process(ts, pad, frame.observation));
++        } catch (Throwable t) {
++            Log.e(TAG, "liveness frame failed", t);
++            finishWith("ENGINE_ERROR", "FRAME_FAILED: " + t.getMessage(), LivenessEvent.ENGINE_ERROR_MESSAGE, null, false);
++        } finally {
++            image.close();
++        }
++    }
++
++    private static Bitmap upright(ImageProxy image) {
++        Bitmap b = image.toBitmap();
++        int rot = image.getImageInfo().getRotationDegrees();
++        if (rot == 0) return b;
++        Matrix m = new Matrix();
++        m.postRotate(rot);
++        return Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), m, true);
++    }
++
++    private static byte[] rgb(Bitmap b) {
++        int w = b.getWidth(), h = b.getHeight();
++        int[] px = new int[w * h];
++        b.getPixels(px, 0, w, 0, 0, w, h);
++        byte[] out = new byte[w * h * 3];
++        for (int i = 0; i < px.length; i++) {
++            out[i * 3] = (byte) (px[i] >> 16);
++            out[i * 3 + 1] = (byte) (px[i] >> 8);
++            out[i * 3 + 2] = (byte) px[i];
++        }
++        return out;
++    }
++
++    private void post(List<LivenessEvent> events) {
++        for (LivenessEvent e : events) {
++            switch (e.kind) {
++                case CHECKING:
++                    show(e.text, String.join("  ", e.guidance), e.progress);
++                    break;
++                case CHALLENGE:
++                    challenges++;
++                    currentPrompt = e.text;
++                    show(currentPrompt, e.challengeLine(), 0);
++                    break;
++                case FEEDBACK:
++                    show(currentPrompt.isEmpty() ? e.text : currentPrompt, e.text, e.progress);
++                    break;
++                case RETRY:
++                    retries++;
++                    show(e.text, LivenessEvent.retryLine(e.retriesRemaining) + "  " + String.join("  ", e.guidance), 0);
++                    retryAtMs = System.currentTimeMillis() + retryDelayMs;
++                    break;
++                case DECISION:
++                    finishWith(e.status.name(), e.reason, e.text, e.passiveScore, e.isAttack());
++                    break;
++                default:
++                    break;
++            }
++        }
++    }
++
++    private void show(String s, String g, double p) {
++        ui.post(() -> {
++            status.setText(s);
++            guidance.setText(g);
++            progress.setProgress((int) Math.round(100 * p));
++        });
++    }
++
++    private void finishWith(String st, String reason, String message, Double score, boolean attack) {
++        if (finished) return;
++        finished = true;
++        long duration = startMs == 0 ? 0 : System.currentTimeMillis() - startMs;
++        Log.i(TAG, "liveness decision " + st + " reason=" + reason + " passiveScore=" + score + " attack=" + attack
++                + " durationMs=" + duration + " retries=" + retries + " challenges=" + challenges);
++        Intent data = new Intent()
++                .putExtra(LivenessContract.RESULT_STATUS, st)
++                .putExtra(LivenessContract.RESULT_REASON, reason)
++                .putExtra(LivenessContract.RESULT_MESSAGE, message)
++                .putExtra(LivenessContract.RESULT_ATTACK, attack)
++                .putExtra(LivenessContract.RESULT_DURATION_MS, duration)
++                .putExtra(LivenessContract.RESULT_RETRIES, retries)
++                .putExtra(LivenessContract.RESULT_CHALLENGES, challenges);
++        if (score != null) data.putExtra(LivenessContract.RESULT_PASSIVE_SCORE, score);
++        boolean passed = "PASSED".equals(st);
++        ui.post(() -> {
++            oval.setColor(passed ? Color.parseColor("#66BB6A") : Color.parseColor("#EF5350"));
++            status.setText(message);
++            guidance.setText("");
++            progress.setProgress(passed ? 100 : 0);
++            setResult(RESULT_OK, data);
++            ui.postDelayed(this::finish, passed ? 1200 : 2500);
++        });
++    }
++
++    @Override
++    public void onBackPressed() {
++        if (session != null) analysisExecutor.execute(() -> post(session.cancel()));
++        else finishWith("CANCELLED", "CANCELLED", LivenessEvent.CANCELLED_MESSAGE, null, false);
++    }
++
++    @Override
++    protected void onDestroy() {
++        super.onDestroy();
++        finished = true;
++        analysisExecutor.execute(() -> {
++            if (faces != null) faces.close();
++            if (models != null) for (Passive.Classifier m : models) m.close();
++        });
++        analysisExecutor.shutdown();
++        padExecutor.shutdownNow();
++    }
++
++    // ------------------------------------------------------------------ layout
++
++    private void buildUi() {
++        FrameLayout root = new FrameLayout(this);
++        root.setBackgroundColor(Color.BLACK);
++        preview = new PreviewView(this);
++        preview.setScaleType(PreviewView.ScaleType.FILL_CENTER);
++        root.addView(preview, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
++        oval = new OvalView(this);
++        root.addView(oval, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
++
++        LinearLayout panel = new LinearLayout(this);
++        panel.setOrientation(LinearLayout.VERTICAL);
++        panel.setBackgroundColor(Color.parseColor("#B8000000"));
++        int pad = (int) (16 * getResources().getDisplayMetrics().density);
++        panel.setPadding(pad, pad, pad, pad);
++        status = new TextView(this);
++        status.setTextColor(Color.WHITE);
++        status.setTextSize(20);
++        guidance = new TextView(this);
++        guidance.setTextColor(Color.parseColor("#FFD54F"));
++        guidance.setTextSize(15);
++        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
++        progress.setMax(100);
++        panel.addView(status);
++        panel.addView(guidance);
++        panel.addView(progress);
++        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
++                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
++        root.addView(panel, lp);
++        setContentView(root);
++    }
++
++    /** Face positioning guide. */
++    static final class OvalView extends View {
++        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
++
++        OvalView(Context c) {
++            super(c);
++            paint.setStyle(Paint.Style.STROKE);
++            paint.setStrokeWidth(6);
++            paint.setColor(Color.parseColor("#CCFFFFFF"));
++            paint.setPathEffect(new DashPathEffect(new float[]{30, 20}, 0));
++        }
++
++        void setColor(int color) {
++            paint.setColor(color);
++            invalidate();
++        }
++
++        @Override
++        protected void onDraw(Canvas canvas) {
++            float w = getWidth(), h = getHeight();
++            float rx = w * 0.32f, ry = Math.min(h * 0.32f, rx * 1.35f);
++            canvas.drawOval(new RectF(w / 2 - rx, h * 0.42f - ry, w / 2 + rx, h * 0.42f + ry), paint);
++        }
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessContract.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessContract.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..473974630454f031dc512e18c12c21ecd8b417d4
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessContract.java
+@@ -0,0 +1,83 @@
++package io.mosip.registration.livenessmanager.android;
++
++import android.app.Activity;
++import android.content.Intent;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++
++import io.mosip.registration.livenessmanager.core.HybridSession;
++
++/**
++ * Intent contract of {@link LivenessActivity}: the workflow and the per-workflow policy from the Registration
++ * Client's global parameters in, the decision out.
++ */
++public final class LivenessContract {
++
++    public static final int REQUEST_CODE = 41;
++
++    public static final String EXTRA_WORKFLOW = "liveness.workflow";               // resident | operator | supervisor
++    public static final String EXTRA_ACCEPT = "liveness.passive.threshold";
++    public static final String EXTRA_REJECT = "liveness.passive.reject.threshold";
++    public static final String EXTRA_FAIL_NO_RESPONSE = "liveness.passive.fail.no.response";
++    public static final String EXTRA_ACTIVE_ENABLED = "liveness.active.enable";
++    public static final String EXTRA_MIN_CHALLENGES = "liveness.active.min.challenges";
++    public static final String EXTRA_CHALLENGE_TYPES = "liveness.active.challenge.types";   // comma list
++    public static final String EXTRA_COMPOUND = "liveness.active.compound.challenges";
++    public static final String EXTRA_MAX_RETRIES = "liveness.active.max.retries";
++    public static final String EXTRA_TIMEOUTS = "liveness.active.challenge.timeout.seconds"; // comma list
++    public static final String EXTRA_RETRY_DELAY_MS = "liveness.retry.delay.ms";
++    public static final String EXTRA_SESSION_TIMEOUT_S = "liveness.session.timeout.seconds";
++
++    public static final String RESULT_STATUS = "liveness.result.status";      // PASSED | FAILED | CANCELLED | ENGINE_ERROR
++    public static final String RESULT_REASON = "liveness.result.reason";      // audit only
++    public static final String RESULT_MESSAGE = "liveness.result.message";    // user text
++    public static final String RESULT_PASSIVE_SCORE = "liveness.result.passive.score";
++    public static final String RESULT_ATTACK = "liveness.result.attack";      // audit only
++    public static final String RESULT_DURATION_MS = "liveness.result.duration.ms";
++    public static final String RESULT_RETRIES = "liveness.result.retries";
++    public static final String RESULT_CHALLENGES = "liveness.result.challenges";
++
++    private LivenessContract() {
++    }
++
++    /** Settings for one session from the intent; absent extras keep the engine defaults. */
++    static HybridSession.Settings settings(Intent in) {
++        HybridSession.Settings s = new HybridSession.Settings();
++        if (in.hasExtra(EXTRA_ACCEPT)) s.passive.acceptThreshold = in.getDoubleExtra(EXTRA_ACCEPT, s.passive.acceptThreshold);
++        if (in.hasExtra(EXTRA_REJECT)) s.passive.rejectThreshold = in.getDoubleExtra(EXTRA_REJECT, s.passive.rejectThreshold);
++        if (s.passive.rejectThreshold > s.passive.acceptThreshold || s.passive.acceptThreshold > 1
++                || s.passive.rejectThreshold < 0) {
++            throw new IllegalArgumentException("thresholds must satisfy 0 <= reject <= accept <= 1");
++        }
++        if (in.hasExtra(EXTRA_FAIL_NO_RESPONSE)) s.failOnPassiveNoResponse = in.getBooleanExtra(EXTRA_FAIL_NO_RESPONSE, false);
++        s.active.withOverrides(
++                in.hasExtra(EXTRA_ACTIVE_ENABLED) ? in.getBooleanExtra(EXTRA_ACTIVE_ENABLED, true) : null,
++                in.hasExtra(EXTRA_MIN_CHALLENGES) ? in.getIntExtra(EXTRA_MIN_CHALLENGES, 3) : null,
++                csv(in.getStringExtra(EXTRA_CHALLENGE_TYPES)),
++                in.hasExtra(EXTRA_COMPOUND) ? in.getBooleanExtra(EXTRA_COMPOUND, true) : null,
++                in.hasExtra(EXTRA_MAX_RETRIES) ? in.getIntExtra(EXTRA_MAX_RETRIES, 3) : null,
++                doubles(in.getStringExtra(EXTRA_TIMEOUTS)));
++        return s;
++    }
++
++    static List<String> csv(String s) {
++        List<String> out = new ArrayList<>();
++        if (s == null) return out;
++        for (String p : s.split(",")) if (!p.trim().isEmpty()) out.add(p.trim().toLowerCase());
++        return out;
++    }
++
++    static List<Double> doubles(String s) {
++        List<Double> out = new ArrayList<>();
++        for (String p : csv(s)) out.add(Double.parseDouble(p));
++        return out;
++    }
++
++    public static boolean passed(int resultCode, Intent data) {
++        return resultCode == Activity.RESULT_OK && data != null && "PASSED".equals(data.getStringExtra(RESULT_STATUS));
++    }
++
++    static final List<String> WORKFLOWS = Arrays.asList("resident", "operator", "supervisor");
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/MediaPipeFaces.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/MediaPipeFaces.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..507d06466a0c663693cc678ea26d3a12dd324d52
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/MediaPipeFaces.java
+@@ -0,0 +1,98 @@
++package io.mosip.registration.livenessmanager.android;
++
++import android.content.Context;
++import android.graphics.Bitmap;
++
++import com.google.mediapipe.framework.image.BitmapImageBuilder;
++import com.google.mediapipe.framework.image.MPImage;
++import com.google.mediapipe.tasks.components.containers.Category;
++import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
++import com.google.mediapipe.tasks.core.BaseOptions;
++import com.google.mediapipe.tasks.vision.core.RunningMode;
++import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker;
++import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++
++import io.mosip.registration.livenessmanager.active.FaceObservation;
++import io.mosip.registration.livenessmanager.core.Passive;
++
++/**
++ * MediaPipe FaceLandmarker (VIDEO mode, same model and options as the desktop engine): one detection per frame
++ * gives the pixel face boxes for PAD and the {@link FaceObservation} for the challenges. Frames must be upright
++ * and un-mirrored (the subject's left on the image's right), as in face-liveness-active.
++ */
++public final class MediaPipeFaces implements AutoCloseable {
++
++    public static final String MODEL_ASSET = "face_landmarker.task";
++
++    /** Result of one frame. */
++    public static final class Frame {
++        public final List<Passive.Face> faces;          // largest first, pixel boxes
++        public final FaceObservation observation;
++
++        Frame(List<Passive.Face> faces, FaceObservation observation) {
++            this.faces = faces;
++            this.observation = observation;
++        }
++    }
++
++    private final FaceLandmarker landmarker;
++
++    public MediaPipeFaces(Context context) {
++        FaceLandmarker.FaceLandmarkerOptions options = FaceLandmarker.FaceLandmarkerOptions.builder()
++                .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL_ASSET).build())
++                .setRunningMode(RunningMode.VIDEO)
++                .setNumFaces(2)
++                .setOutputFaceBlendshapes(true)
++                .setOutputFacialTransformationMatrixes(true)
++                .build();
++        landmarker = FaceLandmarker.createFromOptions(context, options);
++    }
++
++    /** Timestamps must strictly increase. */
++    public Frame analyse(Bitmap upright, long timestampMs) {
++        MPImage image = new BitmapImageBuilder(upright).build();
++        FaceLandmarkerResult r = landmarker.detectForVideo(image, timestampMs);
++        int w = upright.getWidth(), h = upright.getHeight();
++        List<List<NormalizedLandmark>> all = r.faceLandmarks();
++        List<float[]> matrices = r.facialTransformationMatrixes().orElse(Collections.emptyList());
++        List<List<Category>> shapes = r.faceBlendshapes().orElse(Collections.emptyList());
++
++        List<Passive.Face> faces = new ArrayList<>();
++        FaceObservation obs = FaceObservation.noFace(timestampMs, all.size());
++        for (int i = 0; i < all.size(); i++) {
++            List<NormalizedLandmark> lms = all.get(i);
++            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
++            float[] xs = new float[lms.size()];
++            for (int k = 0; k < lms.size(); k++) {
++                float x = lms.get(k).x() * w, y = lms.get(k).y() * h;
++                xs[k] = lms.get(k).x();
++                minX = Math.min(minX, x);
++                minY = Math.min(minY, y);
++                maxX = Math.max(maxX, x);
++                maxY = Math.max(maxY, y);
++            }
++            double[] pose = i < matrices.size() ? FaceObservation.poseFromMatrix(matrices.get(i)) : new double[3];
++            // same rounding as the Python engine: int() of the minimum, ceil of the maximum
++            int[] box = {(int) minX, (int) minY, (int) Math.ceil(maxX), (int) Math.ceil(maxY)};
++            faces.add(new Passive.Face(box, pose[0], pose[1]));
++            if (all.size() == 1) {
++                Map<String, Float> b = new HashMap<>();
++                if (i < shapes.size()) for (Category c : shapes.get(i)) b.put(c.categoryName(), c.score());
++                obs = new FaceObservation(timestampMs, 1, b, pose[0], pose[1], pose[2], FaceObservation.gazeHorizontal(xs));
++            }
++        }
++        faces.sort((a, b) -> Double.compare(b.size(), a.size()));
++        return new Frame(faces, obs);
++    }
++
++    @Override
++    public void close() {
++        landmarker.close();
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/ModelStore.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/ModelStore.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a37fffd951f40b9729f20b8c52aced75f747b6c7
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/ModelStore.java
+@@ -0,0 +1,138 @@
++package io.mosip.registration.livenessmanager.android;
++
++import android.content.Context;
++import android.util.Log;
++
++import org.json.JSONObject;
++
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.security.MessageDigest;
++import java.util.Iterator;
++import java.util.LinkedHashMap;
++import java.util.Map;
++
++/**
++ * Liveness model package management (spec bonus: model version management, secure offline model updates).
++ *
++ * <p>The approved models and their SHA-256 are pinned in the app ({@code assets/liveness_models.json}). A model
++ * package is provisioned offline by copying the files into the app's import folder
++ * ({@code Android/data/<package>/files/liveness-models/}, e.g. {@code adb push} or device management). Each file is
++ * verified against the pinned hash and only then moved into private storage, which other apps and USB access cannot
++ * modify. Files that fail verification are rejected and left in the import folder.
++ */
++public final class ModelStore {
++
++    private static final String TAG = "LivenessModelStore";
++    public static final String PINNED_ASSET = "liveness_models.json";
++    public static final String DIR = "liveness-models";
++
++    private final Context context;
++    private final String version;
++    private final Map<String, String> pinned = new LinkedHashMap<>();
++
++    public ModelStore(Context context) throws IOException {
++        this.context = context.getApplicationContext();
++        try (InputStream in = this.context.getAssets().open(PINNED_ASSET)) {
++            JSONObject json = new JSONObject(new String(readAll(in), StandardCharsets.UTF_8));
++            version = json.getString("version");
++            JSONObject files = json.getJSONObject("files");
++            for (Iterator<String> it = files.keys(); it.hasNext(); ) {
++                String name = it.next();
++                pinned.put(name, files.getString(name).toLowerCase());
++            }
++        } catch (org.json.JSONException e) {
++            throw new IOException("invalid " + PINNED_ASSET, e);
++        }
++    }
++
++    public String version() { return version; }
++
++    public File privateDir() { return new File(context.getFilesDir(), DIR); }
++
++    public File importDir() { return context.getExternalFilesDir(DIR); }
++
++    public File file(String name) { return new File(privateDir(), name); }
++
++    /** Imports verified files from the import folder; returns true when every pinned file is installed. */
++    public synchronized boolean ensureInstalled() {
++        File priv = privateDir();
++        if (!priv.isDirectory() && !priv.mkdirs()) return false;
++        File imp = importDir();
++        for (Map.Entry<String, String> e : pinned.entrySet()) {
++            File target = new File(priv, e.getKey());
++            if (target.isFile()) continue;
++            File candidate = imp == null ? null : new File(imp, e.getKey());
++            if (candidate == null || !candidate.isFile()) {
++                Log.w(TAG, "liveness model " + e.getKey() + " not provisioned (expected in " + imp + ")");
++                continue;
++            }
++            try {
++                String got = sha256(candidate);
++                if (!got.equals(e.getValue())) {
++                    Log.e(TAG, "liveness model " + e.getKey() + " rejected: sha256 " + got + " is not the approved "
++                            + e.getValue());
++                    continue;
++                }
++                File tmp = new File(priv, e.getKey() + ".part");
++                copy(candidate, tmp);
++                if (!sha256(tmp).equals(e.getValue()) || !tmp.renameTo(target)) {
++                    tmp.delete();
++                    continue;
++                }
++                candidate.delete();
++                Log.i(TAG, "liveness model " + e.getKey() + " installed (" + version + ")");
++            } catch (IOException ex) {
++                Log.e(TAG, "liveness model import failed for " + e.getKey(), ex);
++            }
++        }
++        for (String name : pinned.keySet()) if (!new File(priv, name).isFile()) return false;
++        return true;
++    }
++
++    /** Full re-verification of the installed package (diagnostics). */
++    public boolean verifyInstalled() {
++        try {
++            for (Map.Entry<String, String> e : pinned.entrySet()) {
++                File f = file(e.getKey());
++                if (!f.isFile() || !sha256(f).equals(e.getValue())) return false;
++            }
++            return true;
++        } catch (IOException e) {
++            return false;
++        }
++    }
++
++    static String sha256(File f) throws IOException {
++        try (InputStream in = new FileInputStream(f)) {
++            MessageDigest md = MessageDigest.getInstance("SHA-256");
++            byte[] buf = new byte[1 << 20];
++            int n;
++            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
++            StringBuilder sb = new StringBuilder();
++            for (byte b : md.digest()) sb.append(String.format("%02x", b));
++            return sb.toString();
++        } catch (java.security.NoSuchAlgorithmException e) {
++            throw new IOException(e);
++        }
++    }
++
++    private static void copy(File from, File to) throws IOException {
++        try (InputStream in = new FileInputStream(from); java.io.OutputStream out = new java.io.FileOutputStream(to)) {
++            byte[] buf = new byte[1 << 20];
++            int n;
++            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
++        }
++    }
++
++    private static byte[] readAll(InputStream in) throws IOException {
++        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
++        byte[] buf = new byte[8192];
++        int n;
++        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
++        return out.toByteArray();
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/FaceCrop.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/FaceCrop.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c6956ce06d5e382d7eb8d814bb769de8c32220d8
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/FaceCrop.java
+@@ -0,0 +1,56 @@
++package io.mosip.registration.livenessmanager.core;
++
++/**
++ * Square model-input crop around a face (port of face-liveness-passive {@code face.crop_box / extract_crop}):
++ * side = landmark extent x {@code scale} (1.17 = dlib's 1.3 x 0.90, see the passive module), clipped like the
++ * FSFM reference {@code get_boundingbox} (top-left clamped at 0, then shrunk to fit).
++ */
++public final class FaceCrop {
++
++    public static final double DEFAULT_SCALE = 1.17;
++
++    /** Crop box {x0, y0, x1, y1} and the fraction of the ideal square that fell outside the frame. */
++    public static final class Box {
++        public final int x0, y0, x1, y1;
++        public final double clip;
++
++        Box(int x0, int y0, int x1, int y1, double clip) {
++            this.x0 = x0;
++            this.y0 = y0;
++            this.x1 = x1;
++            this.y1 = y1;
++            this.clip = clip;
++        }
++
++        public int width() { return x1 - x0; }
++        public int height() { return y1 - y0; }
++    }
++
++    private FaceCrop() {
++    }
++
++    /** {@code faceBox} = landmark extent {x0, y0, x1, y1} in pixels. */
++    public static Box cropBox(int[] faceBox, int frameW, int frameH, double scale) {
++        int fx0 = faceBox[0], fy0 = faceBox[1], fx1 = faceBox[2], fy1 = faceBox[3];
++        int side = (int) (Math.max(fx1 - fx0, fy1 - fy0) * scale);
++        int cx = Math.floorDiv(fx0 + fx1, 2), cy = Math.floorDiv(fy0 + fy1, 2);
++        int ix = cx - Math.floorDiv(side, 2), iy = cy - Math.floorDiv(side, 2);
++        int insideW = Math.max(0, Math.min(ix + side, frameW) - Math.max(ix, 0));
++        int insideH = Math.max(0, Math.min(iy + side, frameH) - Math.max(iy, 0));
++        double clip = side > 0 ? 1.0 - (insideW * (double) insideH) / ((double) side * side) : 1.0;
++        int x = Math.max(ix, 0), y = Math.max(iy, 0);
++        side = Math.min(frameW - x, side);
++        side = Math.min(frameH - y, side);
++        return new Box(x, y, x + side, y + side, Math.round(clip * 1e4) / 1e4);
++    }
++
++    /** Copies the box out of a row-major RGB frame. */
++    public static byte[] extract(byte[] rgb, int frameW, Box b) {
++        int w = b.width(), h = b.height();
++        byte[] out = new byte[w * h * 3];
++        for (int y = 0; y < h; y++) {
++            System.arraycopy(rgb, ((b.y0 + y) * frameW + b.x0) * 3, out, y * w * 3, w * 3);
++        }
++        return out;
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/HybridSession.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/HybridSession.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3af525055ab5b15a3eec96e6c8ef2e42e6253c5e
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/HybridSession.java
+@@ -0,0 +1,187 @@
++package io.mosip.registration.livenessmanager.core;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import java.util.Random;
++
++import io.mosip.registration.livenessmanager.active.ActivePolicy;
++import io.mosip.registration.livenessmanager.active.ActiveSession;
++import io.mosip.registration.livenessmanager.active.FaceObservation;
++import io.mosip.registration.livenessmanager.active.LivenessEvent;
++
++/**
++ * Hybrid liveness on one camera stream (port of face-liveness-passive {@code hybrid.py}):
++ * <pre>
++ *   passive frames -&gt; aggregated score
++ *     ATTACK       -&gt; FAILED (no challenges shown)
++ *     BONAFIDE     -&gt; PASSED
++ *     UNCERTAIN    -&gt; active challenges with the passive score (weak scores add a hard challenge)
++ *     NON_RESPONSE -&gt; active challenges without a score, or FAILED when configured
++ *   while challenges run, PAD keeps sampling frames; consecutive ATTACK frames end the session as FAILED.
++ * </pre>
++ * Each frame comes with its analysis (faces for PAD, observation for the challenges), produced by the caller with
++ * MediaPipe on Android or synthetically in tests.
++ */
++public final class HybridSession {
++
++    public enum Phase { PASSIVE, ACTIVE, DONE }
++
++    /** Session settings (defaults = the service's YAML), overridable from client configuration. */
++    public static final class Settings {
++        public Passive.Config passive = new Passive.Config();
++        public ActivePolicy active = new ActivePolicy();
++        public boolean failOnPassiveNoResponse = false;
++        public boolean monitorDuringActive = true;
++        public long monitorIntervalMs = 1000;
++        public int monitorAttackFrames = 2;
++    }
++
++    private final Settings s;
++    private final List<Passive.Classifier> models;
++    private final boolean resident;
++    private final Random rng;
++    private final Passive.Stream stream;
++    private Phase phase = Phase.PASSIVE;
++    private ActiveSession active;
++    private Double passiveScore;
++    private Long lastMonitorTs;
++    private int attackRun;
++    private LivenessEvent decision;
++
++    public HybridSession(Settings settings, List<Passive.Classifier> models, boolean resident, Random rng) {
++        this.s = settings;
++        this.models = models;
++        this.resident = resident;
++        this.rng = rng;
++        this.stream = new Passive.Stream(settings.passive);
++    }
++
++    public Phase phase() { return phase; }
++
++    public LivenessEvent decision() { return decision; }
++
++    public boolean retryAvailable() {
++        return phase == Phase.ACTIVE && active.status == ActiveSession.Status.RETRY_AVAILABLE;
++    }
++
++    public List<LivenessEvent> start() {
++        return List.of(LivenessEvent.checking(0, null));
++    }
++
++    /** True if the frame at {@code ts} needs PAD scoring (passive phase sampling, or the active-phase monitor). */
++    public boolean needsPad(long ts) {
++        if (phase == Phase.PASSIVE) return stream.due(ts);
++        return phase == Phase.ACTIVE && s.monitorDuringActive
++                && (lastMonitorTs == null || ts - lastMonitorTs >= s.monitorIntervalMs);
++    }
++
++    /**
++     * Advances the session with one frame. {@code pad} is the frame's PAD result when {@link #needsPad} was true
++     * (else null); {@code obs} is its face observation for the challenges.
++     */
++    public List<LivenessEvent> process(long ts, Passive.FrameResult pad, FaceObservation obs) {
++        List<LivenessEvent> events = new ArrayList<>();
++        if (phase == Phase.PASSIVE) {
++            if (pad != null) {
++                stream.add(pad);
++                events.add(LivenessEvent.checking((double) stream.framesUsed() / stream.framesRequired(),
++                        guidance(pad.reasons)));
++            }
++            if (stream.done()) events.addAll(passiveVerdict());
++            return events;
++        }
++        if (phase != Phase.ACTIVE) return events;
++        if (pad != null) {
++            lastMonitorTs = ts;
++            attackRun = pad.decision == Passive.Decision.ATTACK ? attackRun + 1 : 0;
++            if (attackRun >= s.monitorAttackFrames) {
++                events.add(finish(LivenessEvent.Status.FAILED, "ATTACK_DETECTED_DURING_ACTIVE", LivenessEvent.FAILED_MESSAGE));
++                return events;
++            }
++        }
++        if (active.status != ActiveSession.Status.RUNNING || obs == null) return events;   // waiting for retry()
++        for (LivenessEvent e : active.process(obs)) {
++            events.add(e);
++            if (e.kind == LivenessEvent.Kind.DECISION) events.add(fromActive(e));
++        }
++        return events;
++    }
++
++    public List<LivenessEvent> retry() {
++        if (!retryAvailable()) throw new IllegalStateException("no retry is available");
++        return active.retry();
++    }
++
++    public List<LivenessEvent> cancel() {
++        if (phase == Phase.DONE) return Collections.emptyList();
++        return List.of(finish(LivenessEvent.Status.CANCELLED, "CANCELLED", LivenessEvent.CANCELLED_MESSAGE));
++    }
++
++    private List<LivenessEvent> passiveVerdict() {
++        Passive.FrameResult r = stream.result();
++        passiveScore = r.bonafide;
++        List<LivenessEvent> events = new ArrayList<>();
++        switch (r.decision) {
++            case ATTACK:
++                events.add(finish(LivenessEvent.Status.FAILED, "ATTACK_DETECTED", LivenessEvent.FAILED_MESSAGE));
++                break;
++            case BONAFIDE:
++                events.add(finish(LivenessEvent.Status.PASSED, "PASSIVE_BONAFIDE",
++                        resident ? "Good, face captured successfully" : "Face verified successfully"));
++                break;
++            case NON_RESPONSE:
++                if (s.failOnPassiveNoResponse) {
++                    events.add(finish(LivenessEvent.Status.FAILED, "PASSIVE_NO_RESPONSE", LivenessEvent.FAILED_MESSAGE));
++                    break;
++                }
++                events.addAll(startActive(null));
++                break;
++            default:
++                events.addAll(startActive(r.bonafide));
++        }
++        return events;
++    }
++
++    private List<LivenessEvent> startActive(Double score) {
++        if (!s.active.enabled) {
++            return List.of(finish(LivenessEvent.Status.FAILED, "ACTIVE_DISABLED", LivenessEvent.FAILED_MESSAGE));
++        }
++        active = new ActiveSession(s.active, resident, score, rng);
++        phase = Phase.ACTIVE;
++        return active.start();
++    }
++
++    private LivenessEvent fromActive(LivenessEvent e) {
++        phase = Phase.DONE;
++        decision = LivenessEvent.decision(e.status, e.reason, e.text, passiveScore);
++        return decision;
++    }
++
++    private LivenessEvent finish(LivenessEvent.Status status, String reason, String message) {
++        phase = Phase.DONE;
++        decision = LivenessEvent.decision(status, reason, message, passiveScore);
++        return decision;
++    }
++
++    /** Positioning hints from spec 10.5 for passive quality reasons. */
++    static List<String> guidance(List<Quality.Reason> reasons) {
++        List<String> out = new ArrayList<>();
++        for (Quality.Reason r : reasons) {
++            String g;
++            switch (r) {
++                case NO_FACE:
++                case FACE_CUT_OFF: g = "Keep your face within the capture area."; break;
++                case FACE_TOO_SMALL: g = "Move closer to the camera."; break;
++                case TOO_DARK:
++                case TOO_BRIGHT: g = "Improve lighting."; break;
++                case TOO_BLURRY: g = "Hold still."; break;
++                case POSE_OUT_OF_RANGE: g = "Look directly at the camera."; break;
++                case MULTIPLE_FACES: g = "Only one person should be in front of the camera."; break;
++                default: g = "Ensure your face is clearly visible.";
++            }
++            if (!out.contains(g)) out.add(g);
++        }
++        return out;
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/OnnxClassifier.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/OnnxClassifier.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..451e67d8d135ab80d55b5fc38dad4991b9916d3b
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/OnnxClassifier.java
+@@ -0,0 +1,67 @@
++package io.mosip.registration.livenessmanager.core;
++
++import java.nio.FloatBuffer;
++import java.util.Collections;
++
++import ai.onnxruntime.OnnxTensor;
++import ai.onnxruntime.OrtEnvironment;
++import ai.onnxruntime.OrtException;
++import ai.onnxruntime.OrtSession;
++
++/**
++ * One FSFM model exported to ONNX (face-liveness-passive/scripts/export_onnx.py): input "input" float32
++ * [N, 3, 224, 224] (already preprocessed), output "logits". Runs on the device CPU (offline).
++ */
++public final class OnnxClassifier implements Passive.Classifier {
++
++    private final Passive.ModelSpec spec;
++    private final OrtEnvironment env;
++    private final OrtSession session;
++
++    public OnnxClassifier(Passive.ModelSpec spec, String modelPath, int threads) throws OrtException {
++        this.spec = spec;
++        this.env = OrtEnvironment.getEnvironment();
++        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
++        if (threads > 0) options.setIntraOpNumThreads(threads);
++        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
++        this.session = env.createSession(modelPath, options);
++    }
++
++    @Override
++    public Passive.ModelSpec spec() { return spec; }
++
++    @Override
++    public synchronized float[] probabilities(float[] input) {
++        long[] shape = {1, 3, Preprocess.INPUT, Preprocess.INPUT};
++        try (OnnxTensor t = OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape);
++             OrtSession.Result r = session.run(Collections.singletonMap("input", t))) {
++            float[] logits = ((float[][]) r.get(0).getValue())[0];
++            return softmax(logits);
++        } catch (OrtException e) {
++            throw new IllegalStateException("liveness model " + spec.name + " failed: " + e.getMessage(), e);
++        }
++    }
++
++    static float[] softmax(float[] z) {
++        double max = Double.NEGATIVE_INFINITY;
++        for (float v : z) max = Math.max(max, v);
++        double sum = 0;
++        double[] e = new double[z.length];
++        for (int i = 0; i < z.length; i++) {
++            e[i] = Math.exp(z[i] - max);
++            sum += e[i];
++        }
++        float[] out = new float[z.length];
++        for (int i = 0; i < z.length; i++) out[i] = (float) (e[i] / sum);
++        return out;
++    }
++
++    @Override
++    public void close() {
++        try {
++            session.close();
++        } catch (OrtException ignored) {
++            // closing
++        }
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Passive.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Passive.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f31d36d2cfd83ffc60bcaa8a5b92263bc1985482
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Passive.java
+@@ -0,0 +1,238 @@
++package io.mosip.registration.livenessmanager.core;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * Passive liveness / PAD scoring (port of face-liveness-passive {@code models.fuse}, {@code engine.decide} and the
++ * {@code PassiveStream} sampling/aggregation). Model inference is behind {@link Classifier} so the same logic runs
++ * with ONNX Runtime on Android and in JVM tests.
++ */
++public final class Passive {
++
++    public enum Decision { BONAFIDE, ATTACK, UNCERTAIN, NON_RESPONSE }
++
++    /** Fused categories, in this order: bonafide, presentation_attack, deepfake, synthetic. */
++    public static final List<String> CATEGORIES =
++            Collections.unmodifiableList(Arrays.asList("bonafide", "presentation_attack", "deepfake", "synthetic"));
++
++    /** One FSFM checkpoint's output layout. */
++    public static final class ModelSpec {
++        public final String name;
++        public final List<String> labels;
++        public final int bonafideIndex;
++        /** Index of each CATEGORIES entry in this model's outputs, or -1. */
++        final int[] categoryIndex;
++
++        ModelSpec(String name, List<String> labels, int bonafideIndex, int[] categoryIndex) {
++            this.name = name;
++            this.labels = labels;
++            this.bonafideIndex = bonafideIndex;
++            this.categoryIndex = categoryIndex;
++        }
++    }
++
++    public static final ModelSpec UNIFIED = new ModelSpec("unified",
++            Arrays.asList("bonafide", "deepfake", "synthetic", "presentation_attack"), 0, new int[]{0, 3, 1, 2});
++    public static final ModelSpec FAS = new ModelSpec("fas",
++            Arrays.asList("presentation_attack", "bonafide"), 1, new int[]{1, 0, -1, -1});
++
++    /** Maps a preprocessed input (3 x 224 x 224) to class probabilities in the spec's label order. */
++    public interface Classifier extends AutoCloseable {
++        ModelSpec spec();
++
++        float[] probabilities(float[] input);
++
++        @Override
++        default void close() {
++        }
++    }
++
++    /** Decision thresholds and stream sampling (defaults = face-liveness-passive config/default.yaml). */
++    public static final class Config {
++        public double acceptThreshold = 0.80;
++        public double rejectThreshold = 0.40;
++        public int framesRequired = 5;
++        public long minFrameIntervalMs = 150;
++        public long maxDurationMs = 10_000;
++        public double cropScale = FaceCrop.DEFAULT_SCALE;
++        public Quality.Limits quality = new Quality.Limits();
++        public Map<String, Double> weights = new LinkedHashMap<>();
++
++        public Config() {
++            weights.put("unified", 0.5);
++            weights.put("fas", 0.5);
++        }
++    }
++
++    private Passive() {
++    }
++
++    /** Fused distribution over {@link #CATEGORIES}; sums to 1. */
++    public static double[] fuse(List<ModelSpec> specs, List<float[]> probs, Map<String, Double> weights) {
++        double total = 0, bona = 0;
++        for (int i = 0; i < specs.size(); i++) {
++            double w = weights.getOrDefault(specs.get(i).name, 1.0);
++            total += w;
++            bona += w * probs.get(i)[specs.get(i).bonafideIndex];
++        }
++        bona /= total;
++        double[] split = new double[CATEGORIES.size() - 1];
++        for (int i = 0; i < specs.size(); i++) {
++            int[] idx = Arrays.copyOfRange(specs.get(i).categoryIndex, 1, CATEGORIES.size());
++            int typed = 0;
++            for (int j : idx) if (j >= 0) typed++;
++            if (typed < 2) continue;                       // a binary model says whether, not which
++            double[] cond = new double[idx.length];
++            double s = 0;
++            for (int k = 0; k < idx.length; k++) {
++                cond[k] = idx[k] >= 0 ? probs.get(i)[idx[k]] : 0.0;
++                s += cond[k];
++            }
++            if (s > 0) {
++                double w = weights.getOrDefault(specs.get(i).name, 1.0);
++                for (int k = 0; k < idx.length; k++) split[k] += w * cond[k] / s;
++            }
++        }
++        double ss = 0;
++        for (double v : split) ss += v;
++        if (ss == 0) {
++            split[0] = 1.0;
++            ss = 1.0;
++        }
++        double[] out = new double[CATEGORIES.size()];
++        out[0] = bona;
++        for (int k = 0; k < split.length; k++) out[k + 1] = split[k] / ss * (1.0 - bona);
++        return out;
++    }
++
++    public static Decision decide(Double bonafide, List<Quality.Reason> reasons, boolean enforceQuality, Config c) {
++        if (bonafide == null || reasons.contains(Quality.Reason.MULTIPLE_FACES)) return Decision.NON_RESPONSE;
++        if (!reasons.isEmpty() && enforceQuality) return Decision.NON_RESPONSE;
++        if (bonafide >= c.acceptThreshold) return Decision.BONAFIDE;
++        if (bonafide < c.rejectThreshold) return Decision.ATTACK;
++        return Decision.UNCERTAIN;
++    }
++
++    /** One analysed frame. */
++    public static final class FrameResult {
++        public final long timestampMs;
++        public final Decision decision;
++        public final Double bonafide;              // null when not scored
++        public final double[] categories;          // null when not scored
++        public final List<Quality.Reason> reasons;
++
++        FrameResult(long ts, Decision d, Double bonafide, double[] categories, List<Quality.Reason> reasons) {
++            this.timestampMs = ts;
++            this.decision = d;
++            this.bonafide = bonafide;
++            this.categories = categories;
++            this.reasons = Collections.unmodifiableList(reasons);
++        }
++    }
++
++    /** Detected face, from MediaPipe on Android or from fixtures in tests. */
++    public static final class Face {
++        public final int[] box;                     // landmark extent x0, y0, x1, y1 (px)
++        public final double yawDeg, pitchDeg;
++
++        public Face(int[] box, double yawDeg, double pitchDeg) {
++            this.box = box;
++            this.yawDeg = yawDeg;
++            this.pitchDeg = pitchDeg;
++        }
++
++        public double size() { return Math.max(box[2] - box[0], box[3] - box[1]); }
++    }
++
++    /** Scores one frame (faces sorted largest first; frame row-major RGB). Port of {@code analyze_faces}. */
++    public static FrameResult analyse(byte[] rgb, int w, int h, List<Face> faces, long ts, List<Classifier> models,
++                                      Config c) {
++        if (faces.isEmpty()) {
++            return new FrameResult(ts, Decision.NON_RESPONSE, null, null, Collections.singletonList(Quality.Reason.NO_FACE));
++        }
++        Face face = faces.get(0);
++        List<Quality.Reason> reasons = new ArrayList<>();
++        if (faces.size() > 1) reasons.add(Quality.Reason.MULTIPLE_FACES);
++        FaceCrop.Box box = FaceCrop.cropBox(face.box, w, h, c.cropScale);
++        if (box.width() < 16 || box.height() < 16) {
++            reasons.add(Quality.Reason.FACE_CUT_OFF);
++            return new FrameResult(ts, Decision.NON_RESPONSE, null, null, reasons);
++        }
++        byte[] crop = FaceCrop.extract(rgb, w, box);
++        Quality q = Quality.assess(face.size(), face.yawDeg, face.pitchDeg, crop, box.width(), box.height(), box.clip,
++                c.quality);
++        for (Quality.Reason r : q.reasons) if (!reasons.contains(r)) reasons.add(r);
++        float[] input = Preprocess.toTensor(crop, box.width(), box.height());
++        List<ModelSpec> specs = new ArrayList<>();
++        List<float[]> probs = new ArrayList<>();
++        for (Classifier m : models) {
++            specs.add(m.spec());
++            probs.add(m.probabilities(input));
++        }
++        double[] categories = fuse(specs, probs, c.weights);
++        double bona = categories[0];
++        return new FrameResult(ts, decide(bona, reasons, c.quality.enforce, c), bona, categories, reasons);
++    }
++
++    /** Per-session frame sampling and aggregation (port of {@code PassiveStream}; mean aggregation). */
++    public static final class Stream {
++        private final Config c;
++        private final List<FrameResult> used = new ArrayList<>();
++        private final List<FrameResult> frames = new ArrayList<>();
++        private Long firstTs, lastTs, lastAnalysedTs;
++        private boolean timedOut;
++
++        public Stream(Config c) {
++            this.c = c;
++        }
++
++        public boolean done() { return used.size() >= c.framesRequired || timedOut; }
++
++        public int framesUsed() { return used.size(); }
++
++        public int framesRequired() { return c.framesRequired; }
++
++        /** True if a frame with this timestamp should be analysed now (sampling interval, order, duration). */
++        public boolean due(long ts) {
++            if (lastTs != null && ts <= lastTs) return false;
++            lastTs = ts;
++            if (firstTs == null) firstTs = ts;
++            if (ts - firstTs > c.maxDurationMs) timedOut = true;
++            if (done()) return false;
++            if (lastAnalysedTs != null && ts - lastAnalysedTs < c.minFrameIntervalMs) return false;
++            lastAnalysedTs = ts;
++            return true;
++        }
++
++        public void add(FrameResult r) {
++            frames.add(r);
++            if (r.decision != Decision.NON_RESPONSE) used.add(r);
++        }
++
++        /** Aggregated result; fewer than framesRequired usable frames is a NON_RESPONSE (INSUFFICIENT_FRAMES). */
++        public FrameResult result() {
++            long ts = lastTs == null ? 0 : lastTs;
++            if (used.isEmpty() || used.size() < c.framesRequired) {
++                List<Quality.Reason> reasons = new ArrayList<>();
++                for (FrameResult f : frames) for (Quality.Reason r : f.reasons) if (!reasons.contains(r)) reasons.add(r);
++                reasons.add(Quality.Reason.INSUFFICIENT_FRAMES);
++                return new FrameResult(ts, Decision.NON_RESPONSE, null, null, reasons);
++            }
++            double bona = 0;
++            double[] cats = new double[CATEGORIES.size()];
++            for (FrameResult f : used) {
++                bona += f.bonafide;
++                for (int k = 0; k < cats.length; k++) cats[k] += f.categories[k];
++            }
++            bona /= used.size();
++            for (int k = 0; k < cats.length; k++) cats[k] /= used.size();
++            return new FrameResult(ts, decide(bona, Collections.emptyList(), false, c), bona, cats,
++                    Collections.emptyList());
++        }
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/PilResize.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/PilResize.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..eacab1c90a881e76689c29b2597ebb9b88e88f94
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/PilResize.java
+@@ -0,0 +1,153 @@
++package io.mosip.registration.livenessmanager.core;
++
++/**
++ * Bicubic resize of 8-bit RGB images, bit-exact with Pillow's {@code Image.resize(size, Image.BICUBIC)}
++ * (libImaging/Resample.c: separable two-pass resampling, cubic kernel a = -0.5 widened by the scale factor when
++ * downscaling, coefficients normalised to 22-bit fixed point, horizontal pass first).
++ *
++ * <p>The FSFM models were validated with Pillow's resize, so the Android preprocessing must reproduce it exactly.
++ */
++public final class PilResize {
++
++    private static final int PRECISION_BITS = 32 - 8 - 2;
++    private static final double SUPPORT = 2.0;
++
++    private PilResize() {
++    }
++
++    private static double bicubic(double x) {
++        final double a = -0.5;
++        if (x < 0.0) x = -x;
++        if (x < 1.0) return ((a + 2.0) * x - (a + 3.0)) * x * x + 1;
++        if (x < 2.0) return (((x - 5) * x + 8) * x - 4) * a;
++        return 0.0;
++    }
++
++    /** Coefficients for one axis: bounds[2*i] = first source index, bounds[2*i+1] = count; kk is outSize x ksize. */
++    private static final class Coeffs {
++        int ksize;
++        int[] bounds;
++        int[] kk;
++    }
++
++    private static Coeffs precompute(int inSize, double in0, double in1, int outSize) {
++        double scale = (in1 - in0) / outSize;
++        double filterscale = scale < 1.0 ? 1.0 : scale;
++        double support = SUPPORT * filterscale;
++        int ksize = (int) Math.ceil(support) * 2 + 1;
++        double[] k = new double[outSize * ksize];
++        int[] bounds = new int[outSize * 2];
++        for (int xx = 0; xx < outSize; xx++) {
++            double center = in0 + (xx + 0.5) * scale;
++            double ww = 0.0;
++            double ss = 1.0 / filterscale;
++            int xmin = (int) (center - support + 0.5);
++            if (xmin < 0) xmin = 0;
++            int xmax = (int) (center + support + 0.5);
++            if (xmax > inSize) xmax = inSize;
++            xmax -= xmin;
++            int base = xx * ksize;
++            int x;
++            for (x = 0; x < xmax; x++) {
++                double w = bicubic((x + xmin - center + 0.5) * ss);
++                k[base + x] = w;
++                ww += w;
++            }
++            for (x = 0; x < xmax; x++) {
++                if (ww != 0.0) k[base + x] /= ww;
++            }
++            for (; x < ksize; x++) k[base + x] = 0;
++            bounds[xx * 2] = xmin;
++            bounds[xx * 2 + 1] = xmax;
++        }
++        Coeffs c = new Coeffs();
++        c.ksize = ksize;
++        c.bounds = bounds;
++        c.kk = new int[k.length];
++        for (int i = 0; i < k.length; i++) {
++            c.kk[i] = k[i] < 0 ? (int) (-0.5 + k[i] * (1 << PRECISION_BITS)) : (int) (0.5 + k[i] * (1 << PRECISION_BITS));
++        }
++        return c;
++    }
++
++    private static int clip8(long in) {
++        if (in >= (1L << PRECISION_BITS << 8)) return 255;
++        if (in <= 0) return 0;
++        return (int) (in >> PRECISION_BITS);
++    }
++
++    /**
++     * Resizes {@code rgb} (row-major, 3 bytes per pixel) of {@code w x h} to {@code outW x outH}.
++     *
++     * @return the resized image, row-major RGB
++     */
++    public static byte[] resize(byte[] rgb, int w, int h, int outW, int outH) {
++        if (rgb.length < w * h * 3) throw new IllegalArgumentException("buffer smaller than w*h*3");
++        boolean needH = outW != w;
++        boolean needV = outH != h;
++        Coeffs ch = precompute(w, 0, w, outW);
++        Coeffs cv = precompute(h, 0, h, outH);
++
++        byte[] src = rgb;
++        int srcW = w;
++        int rows = h;
++        int[] vBounds = cv.bounds.clone();
++        if (needH) {
++            int yFirst = cv.bounds[0];
++            int yLast = cv.bounds[outH * 2 - 2] + cv.bounds[outH * 2 - 1];
++            if (!needV) {
++                yFirst = 0;
++                yLast = h;
++            }
++            for (int i = 0; i < outH; i++) vBounds[i * 2] -= yFirst;
++            rows = yLast - yFirst;
++            byte[] tmp = new byte[outW * rows * 3];
++            for (int yy = 0; yy < rows; yy++) {
++                int inRow = (yy + yFirst) * w * 3;
++                int outRow = yy * outW * 3;
++                for (int xx = 0; xx < outW; xx++) {
++                    int xmin = ch.bounds[xx * 2];
++                    int xmax = ch.bounds[xx * 2 + 1];
++                    int kb = xx * ch.ksize;
++                    long s0 = 1L << (PRECISION_BITS - 1), s1 = s0, s2 = s0;
++                    for (int x = 0; x < xmax; x++) {
++                        int p = inRow + (x + xmin) * 3;
++                        int k = ch.kk[kb + x];
++                        s0 += (long) (src[p] & 0xff) * k;
++                        s1 += (long) (src[p + 1] & 0xff) * k;
++                        s2 += (long) (src[p + 2] & 0xff) * k;
++                    }
++                    tmp[outRow + xx * 3] = (byte) clip8(s0);
++                    tmp[outRow + xx * 3 + 1] = (byte) clip8(s1);
++                    tmp[outRow + xx * 3 + 2] = (byte) clip8(s2);
++                }
++            }
++            src = tmp;
++            srcW = outW;
++        }
++        if (!needV) {
++            return needH ? src : src.clone();
++        }
++        byte[] out = new byte[outW * outH * 3];
++        for (int yy = 0; yy < outH; yy++) {
++            int ymin = vBounds[yy * 2];
++            int ymax = vBounds[yy * 2 + 1];
++            int kb = yy * cv.ksize;
++            for (int xx = 0; xx < outW; xx++) {
++                long s0 = 1L << (PRECISION_BITS - 1), s1 = s0, s2 = s0;
++                for (int y = 0; y < ymax; y++) {
++                    int p = ((y + ymin) * srcW + xx) * 3;
++                    int k = cv.kk[kb + y];
++                    s0 += (long) (src[p] & 0xff) * k;
++                    s1 += (long) (src[p + 1] & 0xff) * k;
++                    s2 += (long) (src[p + 2] & 0xff) * k;
++                }
++                int o = (yy * outW + xx) * 3;
++                out[o] = (byte) clip8(s0);
++                out[o + 1] = (byte) clip8(s1);
++                out[o + 2] = (byte) clip8(s2);
++            }
++        }
++        return out;
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Preprocess.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Preprocess.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..11055fbf763e6baa2674c05c7be0d1fd9b9adb83
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Preprocess.java
+@@ -0,0 +1,36 @@
++package io.mosip.registration.livenessmanager.core;
++
++/**
++ * FSFM model input (port of face-liveness-passive {@code models.preprocess}): square RGB crop -> Pillow bicubic
++ * resize to 256 -> centre crop 224 -> /255 -> normalise with the VGGFace2 statistics of FSFM pre-training.
++ * Output layout: CHW float32, 3 x 224 x 224.
++ */
++public final class Preprocess {
++
++    public static final int RESIZE = 256;
++    public static final int INPUT = 224;
++    static final float[] MEAN = {0.5482207536697388f, 0.42340534925460815f, 0.3654651641845703f};
++    static final float[] STD = {0.2789176106452942f, 0.2438540756702423f, 0.23493893444538116f};
++
++    private Preprocess() {
++    }
++
++    public static float[] toTensor(byte[] cropRgb, int w, int h) {
++        byte[] r = PilResize.resize(cropRgb, w, h, RESIZE, RESIZE);
++        int off = (RESIZE - INPUT) / 2;
++        float[] out = new float[3 * INPUT * INPUT];
++        int plane = INPUT * INPUT;
++        for (int y = 0; y < INPUT; y++) {
++            for (int x = 0; x < INPUT; x++) {
++                int p = ((y + off) * RESIZE + (x + off)) * 3;
++                int o = y * INPUT + x;
++                for (int c = 0; c < 3; c++) {
++                    // numpy 2: float32 array / python float stays float32, so divide in float (bit-exact)
++                    float v = (r[p + c] & 0xff) / 255.0f;
++                    out[c * plane + o] = (v - MEAN[c]) / STD[c];
++                }
++            }
++        }
++        return out;
++    }
++}
+diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Quality.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Quality.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..299de38c264ef5d6471bc56821631c3f3197aa3d
+--- /dev/null
++++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/core/Quality.java
+@@ -0,0 +1,113 @@
++package io.mosip.registration.livenessmanager.core;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++
++/**
++ * Capture-quality gate (port of face-liveness-passive {@code quality.assess}). Frames that fail are ISO/IEC 30107-3
++ * non-responses, not attack decisions. Measurements are taken on the crop resized to 224 x 224 grey (area
++ * averaging, as OpenCV INTER_AREA): sharpness = variance of the 3x3 Laplacian, brightness = mean, contrast = std.
++ */
++public final class Quality {
++
++    public enum Reason {
++        NO_FACE, MULTIPLE_FACES, FACE_TOO_SMALL, TOO_BLURRY, TOO_DARK, TOO_BRIGHT, POSE_OUT_OF_RANGE, FACE_CUT_OFF,
++        INSUFFICIENT_FRAMES
++    }
++
++    /** Limits (defaults = face-liveness-passive config/default.yaml quality section). */
++    public static final class Limits {
++        public boolean enforce = true;
++        public int minFacePx = 96;
++        public double minSharpness = 15.0;
++        public double minBrightness = 40.0;
++        public double maxBrightness = 220.0;
++        public double maxAbsYawDeg = 35.0;
++        public double maxAbsPitchDeg = 30.0;
++        public double maxCropClip = 0.20;
++    }
++
++    public final double sharpness, brightness, contrast;
++    public final List<Reason> reasons;
++
++    private Quality(double sharpness, double brightness, double contrast, List<Reason> reasons) {
++        this.sharpness = sharpness;
++        this.brightness = brightness;
++        this.contrast = contrast;
++        this.reasons = Collections.unmodifiableList(reasons);
++    }
++
++    public boolean passed() { return reasons.isEmpty(); }
++
++    public static Quality assess(double faceSizePx, double yawDeg, double pitchDeg, byte[] cropRgb, int w, int h,
++                                 double clip, Limits l) {
++        double[] m = measure(cropRgb, w, h);
++        List<Reason> reasons = new ArrayList<>();
++        if (faceSizePx < l.minFacePx) reasons.add(Reason.FACE_TOO_SMALL);
++        if (m[0] < l.minSharpness) reasons.add(Reason.TOO_BLURRY);
++        if (m[1] < l.minBrightness) reasons.add(Reason.TOO_DARK);
++        if (m[1] > l.maxBrightness) reasons.add(Reason.TOO_BRIGHT);
++        if (Math.abs(yawDeg) > l.maxAbsYawDeg || Math.abs(pitchDeg) > l.maxAbsPitchDeg) reasons.add(Reason.POSE_OUT_OF_RANGE);
++        if (clip > l.maxCropClip) reasons.add(Reason.FACE_CUT_OFF);
++        return new Quality(m[0], m[1], m[2], reasons);
++    }
++
++    /** {sharpness, brightness, contrast} of an RGB crop. */
++    static double[] measure(byte[] rgb, int w, int h) {
++        final int side = 224;
++        double[] grey = areaResizeGrey(rgb, w, h, side, side);
++        double sum = 0, sq = 0;
++        for (double v : grey) {
++            sum += v;
++            sq += v * v;
++        }
++        int n = side * side;
++        double mean = sum / n;
++        double std = Math.sqrt(Math.max(0, sq / n - mean * mean));
++        // 3x3 Laplacian [0 1 0; 1 -4 1; 0 1 0] with reflect-101 borders (OpenCV default), variance over all pixels
++        double ls = 0, lsq = 0;
++        for (int y = 0; y < side; y++) {
++            int yu = y == 0 ? 1 : y - 1, yd = y == side - 1 ? side - 2 : y + 1;
++            for (int x = 0; x < side; x++) {
++                int xl = x == 0 ? 1 : x - 1, xr = x == side - 1 ? side - 2 : x + 1;
++                double c = grey[y * side + x];
++                double lap = grey[yu * side + x] + grey[yd * side + x] + grey[y * side + xl] + grey[y * side + xr] - 4 * c;
++                ls += lap;
++                lsq += lap * lap;
++            }
++        }
++        double lmean = ls / n;
++        return new double[]{lsq / n - lmean * lmean, mean, std};
++    }
++
++    /** Area-average resize to grey (BT.601 luma, as cv2 RGB2GRAY), rounded to 8-bit like OpenCV's uint8 output. */
++    static double[] areaResizeGrey(byte[] rgb, int w, int h, int outW, int outH) {
++        double[] out = new double[outW * outH];
++        double sx = (double) w / outW, sy = (double) h / outH;
++        for (int oy = 0; oy < outH; oy++) {
++            double y0 = oy * sy, y1 = y0 + sy;
++            for (int ox = 0; ox < outW; ox++) {
++                double x0 = ox * sx, x1 = x0 + sx;
++                double r = 0, g = 0, b = 0, area = 0;
++                for (int y = (int) Math.floor(y0); y < Math.min(h, (int) Math.ceil(y1)); y++) {
++                    double wy = Math.min(y + 1, y1) - Math.max(y, y0);
++                    if (wy <= 0) continue;
++                    for (int x = (int) Math.floor(x0); x < Math.min(w, (int) Math.ceil(x1)); x++) {
++                        double wx = Math.min(x + 1, x1) - Math.max(x, x0);
++                        if (wx <= 0) continue;
++                        double a = wx * wy;
++                        int p = (y * w + x) * 3;
++                        r += (rgb[p] & 0xff) * a;
++                        g += (rgb[p + 1] & 0xff) * a;
++                        b += (rgb[p + 2] & 0xff) * a;
++                        area += a;
++                    }
++                }
++                double rr = Math.round(r / area), gg = Math.round(g / area), bb = Math.round(b / area);
++                out[oy * outW + ox] = Math.round(0.299 * rr + 0.587 * gg + 0.114 * bb);
++            }
++        }
++        return out;
++    }
++}
+diff --git a/android/livenessmanager/src/test/java/io/mosip/registration/livenessmanager/ParityTest.java b/android/livenessmanager/src/test/java/io/mosip/registration/livenessmanager/ParityTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d479082b521abbc045e30ba3537a408ec03a313
+--- /dev/null
++++ b/android/livenessmanager/src/test/java/io/mosip/registration/livenessmanager/ParityTest.java
+@@ -0,0 +1,168 @@
++package io.mosip.registration.livenessmanager;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++import static org.junit.Assume.assumeTrue;
++
++import java.io.File;
++import java.io.IOException;
++import java.nio.ByteBuffer;
++import java.nio.ByteOrder;
++import java.nio.file.Files;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++
++import org.junit.AfterClass;
++import org.junit.BeforeClass;
++import org.junit.Test;
++
++import io.mosip.registration.livenessmanager.core.OnnxClassifier;
++import io.mosip.registration.livenessmanager.core.Passive;
++import io.mosip.registration.livenessmanager.core.Preprocess;
++import io.mosip.registration.livenessmanager.core.Quality;
++
++/**
++ * The Android pipeline against the Python engine it was ported from, using fixtures written by
++ * face-liveness-passive/scripts/export_onnx.py: Pillow-exact preprocessing, ONNX vs PyTorch probabilities, and the
++ * whole per-frame result (crop, quality gate, fusion, decision) on full frames.
++ */
++public class ParityTest {
++
++    static File dir;
++    static File fixtures;
++    static OnnxClassifier unified, fas;
++
++    @BeforeClass
++    public static void load() throws Exception {
++        dir = new File(System.getProperty("liveness.onnx.dir", "missing"));
++        assumeTrue("export_onnx.py fixtures not found in " + dir, new File(dir, "manifest.json").isFile());
++        fixtures = new File(dir, "fixtures");
++        unified = new OnnxClassifier(Passive.UNIFIED, new File(dir, "fsfm_unified.onnx").getPath(), 0);
++        fas = new OnnxClassifier(Passive.FAS, new File(dir, "fsfm_fas.onnx").getPath(), 0);
++    }
++
++    @AfterClass
++    public static void close() {
++        if (unified != null) unified.close();
++        if (fas != null) fas.close();
++    }
++
++    static List<String> list(String key) throws IOException {
++        String json = new String(Files.readAllBytes(new File(dir, "manifest.json").toPath()));
++        Matcher m = Pattern.compile("\"" + key + "\":\\s*\\[([^\\]]*)\\]").matcher(json);
++        assertTrue(key + " missing in manifest", m.find());
++        List<String> out = new ArrayList<>();
++        for (String s : m.group(1).split(",")) out.add(s.trim().replace("\"", ""));
++        return out;
++    }
++
++    /** Binary PPM (P6, maxval 255) written by export_onnx.py: width, height and raw RGB. */
++    static final class Rgb {
++        final int width, height;
++        final byte[] pixels;
++
++        Rgb(File f) throws IOException {
++            byte[] all = Files.readAllBytes(f.toPath());
++            int[] pos = {0};
++            assertEquals("P6", token(all, pos));
++            width = Integer.parseInt(token(all, pos));
++            height = Integer.parseInt(token(all, pos));
++            assertEquals("255", token(all, pos));
++            int start = pos[0] + 1;                       // single whitespace after maxval
++            pixels = Arrays.copyOfRange(all, start, start + width * height * 3);
++            assertEquals(width * height * 3, all.length - start);
++        }
++
++        private static String token(byte[] b, int[] pos) {
++            while (Character.isWhitespace(b[pos[0]])) pos[0]++;
++            int s = pos[0];
++            while (!Character.isWhitespace(b[pos[0]])) pos[0]++;
++            return new String(b, s, pos[0] - s);
++        }
++    }
++
++    static float[] floats(File f) throws IOException {
++        ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(f.toPath())).order(ByteOrder.LITTLE_ENDIAN);
++        float[] out = new float[b.remaining() / 4];
++        b.asFloatBuffer().get(out);
++        return out;
++    }
++
++    static String text(File f) throws IOException {
++        return new String(Files.readAllBytes(f.toPath()));
++    }
++
++    static double[] numbers(String json, String key) {
++        Matcher m = Pattern.compile("\"" + key + "\":\\s*\\[([^\\]]*)\\]").matcher(json);
++        assertTrue(key, m.find());
++        return Arrays.stream(m.group(1).split(",")).mapToDouble(s -> Double.parseDouble(s.trim())).toArray();
++    }
++
++    static Double number(String json, String key) {
++        Matcher m = Pattern.compile("\"" + key + "\":\\s*(null|[-0-9.eE]+)").matcher(json);
++        assertTrue(key, m.find());
++        return "null".equals(m.group(1)) ? null : Double.parseDouble(m.group(1));
++    }
++
++    @Test
++    public void preprocessingIsBitExactWithPillow() throws Exception {
++        for (String name : list("fixtures")) {
++            Rgb img = new Rgb(new File(fixtures, name + ".ppm"));
++            float[] got = Preprocess.toTensor(img.pixels, img.width, img.height);
++            float[] want = floats(new File(fixtures, name + ".input.f32"));
++            assertEquals(want.length, got.length);
++            float max = 0;
++            for (int i = 0; i < got.length; i++) max = Math.max(max, Math.abs(got[i] - want[i]));
++            assertEquals(name + " max |diff|", 0f, max, 0f);
++        }
++    }
++
++    @Test
++    public void onnxModelsReproducePyTorch() throws Exception {
++        for (String name : list("fixtures")) {
++            float[] input = floats(new File(fixtures, name + ".input.f32"));
++            for (OnnxClassifier c : new OnnxClassifier[]{unified, fas}) {
++                double[] want = numbers(text(new File(fixtures, name + "." + c.spec().name + ".json")), "probabilities");
++                float[] got = c.probabilities(input);
++                for (int i = 0; i < want.length; i++) {
++                    assertEquals(name + " " + c.spec().name + "[" + i + "]", want[i], got[i], 1e-4);
++                }
++            }
++        }
++    }
++
++    @Test
++    public void wholeFramePipelineMatchesThePythonEngine() throws Exception {
++        Passive.Config cfg = new Passive.Config();
++        for (String name : list("frame_fixtures")) {
++            String json = text(new File(fixtures, name + ".json"));
++            Rgb img = new Rgb(new File(fixtures, name + ".ppm"));
++            List<Passive.Face> faces = new ArrayList<>();
++            Matcher m = Pattern.compile("\"box\":\\s*\\[([^\\]]*)\\],\\s*\"yaw_deg\":\\s*([-0-9.eE]+),\\s*\"pitch_deg\":\\s*([-0-9.eE]+)")
++                    .matcher(json);
++            while (m.find()) {
++                int[] box = Arrays.stream(m.group(1).split(",")).mapToInt(s -> Integer.parseInt(s.trim())).toArray();
++                faces.add(new Passive.Face(box, Double.parseDouble(m.group(2)), Double.parseDouble(m.group(3))));
++            }
++            Passive.FrameResult r = Passive.analyse(img.pixels, img.width, img.height, faces, 0,
++                    Arrays.asList(unified, fas), cfg);
++            Matcher d = Pattern.compile("\"decision\":\\s*\"([a-z_]+)\"").matcher(json);
++            assertTrue(d.find());
++            assertEquals(name + " decision", d.group(1).toUpperCase(), r.decision.name());
++            Double want = number(json, "bonafide_probability");
++            assertEquals(name + " bona fide probability", want, r.bonafide, 2e-4);
++            List<String> reasons = new ArrayList<>();
++            for (Quality.Reason q : r.reasons) reasons.add(q.name().toLowerCase());
++            Matcher rq = Pattern.compile("\"reasons\":\\s*\\[([^\\]]*)\\]").matcher(json);
++            assertTrue(rq.find());
++            List<String> wantReasons = new ArrayList<>();
++            for (String s : rq.group(1).split(",")) if (!s.trim().isEmpty()) wantReasons.add(s.trim().replace("\"", ""));
++            assertEquals(name + " quality reasons", wantReasons, reasons);
++            System.out.println("[parity] " + name + ": java " + r.decision + " " + r.bonafide + " / python " + want);
++        }
++    }
++}
+diff --git a/android/livenessmanager/src/test/java/io/mosip/registration/livenessmanager/SessionTest.java b/android/livenessmanager/src/test/java/io/mosip/registration/livenessmanager/SessionTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..00eeb43eddd9f2743ce6dce8476c701693aac96c
+--- /dev/null
++++ b/android/livenessmanager/src/test/java/io/mosip/registration/livenessmanager/SessionTest.java
+@@ -0,0 +1,338 @@
++package io.mosip.registration.livenessmanager;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Random;
++
++import org.junit.Test;
++
++import io.mosip.registration.livenessmanager.active.ActivePolicy;
++import io.mosip.registration.livenessmanager.active.ActivePolicy.Action;
++import io.mosip.registration.livenessmanager.active.ActivePolicy.Tier;
++import io.mosip.registration.livenessmanager.active.ActiveSession;
++import io.mosip.registration.livenessmanager.active.FaceObservation;
++import io.mosip.registration.livenessmanager.active.LivenessEvent;
++import io.mosip.registration.livenessmanager.core.HybridSession;
++import io.mosip.registration.livenessmanager.core.Passive;
++import io.mosip.registration.livenessmanager.core.Quality;
++
++/**
++ * Active and hybrid sessions with synthetic observations (as the Python modules' SimulatedUser): a live user
++ * performing each prompt passes; a static face times out; opposite movements fail; escalation and retries follow
++ * the policy; passive verdicts route to accept / reject / challenges.
++ */
++public class SessionTest {
++
++    static final long FRAME_MS = 40;
++
++    /** Produces the observations of a person performing a prompted action (neutral, action, back to neutral). */
++    static List<FaceObservation> perform(List<Action> actions, ActivePolicy.StepParams step, long[] ts) {
++        List<FaceObservation> out = new ArrayList<>();
++        for (int i = 0; i < 4; i++) out.add(neutral(ts));
++        for (Action a : actions) {
++            for (int i = 0; i < 4; i++) out.add(neutral(ts));
++            for (int i = 0; i < 5; i++) out.add(acting(a, step, ts));
++            for (int i = 0; i < 4; i++) out.add(neutral(ts));
++        }
++        return out;
++    }
++
++    static FaceObservation neutral(long[] ts) {
++        return new FaceObservation(ts[0] += FRAME_MS, 1, new HashMap<>(), 0, 0, 0, 0);
++    }
++
++    static FaceObservation acting(Action a, ActivePolicy.StepParams step, long[] ts) {
++        Map<String, Float> b = new HashMap<>();
++        double yaw = 0, pitch = 0, gaze = 0;
++        switch (a) {
++            case BLINK: b.put("eyeBlinkLeft", 0.9f); b.put("eyeBlinkRight", 0.9f); break;
++            case SMILE: b.put("mouthSmileLeft", 0.8f); b.put("mouthSmileRight", 0.8f); break;
++            case OPEN_MOUTH: b.put("jawOpen", 0.7f); break;
++            case TURN_LEFT: yaw = step.yawDeg + 8; break;
++            case TURN_RIGHT: yaw = -(step.yawDeg + 8); break;
++            case LOOK_UP: pitch = step.pitchDeg + 6; break;
++            case LOOK_DOWN: case NOD: pitch = -(step.pitchDeg + 6); break;
++            case GAZE_LEFT: gaze = 0.4; break;
++            case GAZE_RIGHT: gaze = -0.4; break;
++            case GAZE_UP: b.put("eyeLookUpLeft", 0.7f); b.put("eyeLookUpRight", 0.7f); break;
++            case GAZE_DOWN: b.put("eyeLookDownLeft", 0.7f); b.put("eyeLookDownRight", 0.7f); break;
++            default: break;
++        }
++        return new FaceObservation(ts[0] += FRAME_MS, 1, b, yaw, pitch, 0, gaze);
++    }
++
++    /** Runs an active session; `live` = the user follows every prompt, else a static face. */
++    static List<LivenessEvent> runActive(ActiveSession s, ActivePolicy p, boolean live, int maxFrames) {
++        List<LivenessEvent> all = new ArrayList<>(s.start());
++        long[] ts = {0};
++        List<FaceObservation> queue = new ArrayList<>();
++        int frames = 0;
++        while (frames++ < maxFrames) {
++            if (s.status == ActiveSession.Status.RETRY_AVAILABLE) {
++                all.addAll(s.retry());
++            }
++            if (s.status != ActiveSession.Status.RUNNING) break;
++            LivenessEvent last = lastChallenge(all);
++            if (queue.isEmpty()) {
++                queue.addAll(live ? perform(last.actions, p.stepParams(stepIndex(all)), ts) : List.of(neutral(ts)));
++            }
++            List<LivenessEvent> ev = s.process(queue.remove(0));
++            all.addAll(ev);
++            for (LivenessEvent e : ev) if (e.kind == LivenessEvent.Kind.CHALLENGE) queue.clear();
++        }
++        return all;
++    }
++
++    static LivenessEvent lastChallenge(List<LivenessEvent> events) {
++        for (int i = events.size() - 1; i >= 0; i--) if (events.get(i).kind == LivenessEvent.Kind.CHALLENGE) return events.get(i);
++        throw new AssertionError("no challenge");
++    }
++
++    static int stepIndex(List<LivenessEvent> events) {
++        int n = 0;
++        for (int i = events.size() - 1; i >= 0; i--) {
++            if (events.get(i).kind == LivenessEvent.Kind.RETRY) break;
++            if (events.get(i).kind == LivenessEvent.Kind.CHALLENGE) n++;
++        }
++        return Math.max(0, n - 1);
++    }
++
++    static LivenessEvent decision(List<LivenessEvent> events) {
++        for (int i = events.size() - 1; i >= 0; i--) if (events.get(i).kind == LivenessEvent.Kind.DECISION) return events.get(i);
++        throw new AssertionError("no decision in " + events);
++    }
++
++    static long count(List<LivenessEvent> events, LivenessEvent.Kind k) {
++        return events.stream().filter(e -> e.kind == k).count();
++    }
++
++    // ------------------------------------------------------------------ active
++
++    @Test
++    public void liveUserPassesEscalatingChallenges() {
++        ActivePolicy p = new ActivePolicy();
++        ActiveSession s = new ActiveSession(p, true, 0.6, new Random(7));
++        List<LivenessEvent> ev = runActive(s, p, true, 5000);
++        assertEquals(LivenessEvent.Status.PASSED, decision(ev).status);
++        assertEquals("Good, face captured successfully", decision(ev).text);
++        assertEquals(Arrays.asList(Tier.EASY, Tier.MEDIUM, Tier.HARD), s.plannedTiers().subList(0, 3));
++        for (List<Action> c : s.history) assertTrue(c.size() == 1 || c.size() == 2);
++    }
++
++    @Test
++    public void everyActionCanBePerformed() {
++        for (Action a : Action.values()) {
++            ActivePolicy p = new ActivePolicy().withOverrides(null, 1, List.of(a.code()), false, 0, null);
++            ActiveSession s = new ActiveSession(p, false, 0.9, new Random(1));
++            List<LivenessEvent> ev = runActive(s, p, true, 2000);
++            assertEquals(a + " should pass", LivenessEvent.Status.PASSED, decision(ev).status);
++        }
++    }
++
++    @Test
++    public void staticFaceTimesOutRetriesHarderThenFails() {
++        ActivePolicy p = new ActivePolicy();
++        ActiveSession s = new ActiveSession(p, true, 0.6, new Random(3));
++        List<LivenessEvent> ev = runActive(s, p, false, 20000);
++        assertEquals(p.maxRetries, count(ev, LivenessEvent.Kind.RETRY));
++        LivenessEvent d = decision(ev);
++        assertEquals(LivenessEvent.Status.FAILED, d.status);
++        assertEquals(LivenessEvent.MAX_RETRIES_MESSAGE, d.text);
++        assertEquals("ACTIVE_FAILED", d.reason);
++    }
++
++    @Test
++    public void weakPassiveScoreAddsAHardChallenge() {
++        ActivePolicy p = new ActivePolicy();
++        ActiveSession s = new ActiveSession(p, true, 0.45, new Random(5));
++        runActive(s, p, true, 6000);
++        assertEquals(Arrays.asList(Tier.EASY, Tier.MEDIUM, Tier.HARD, Tier.HARD), s.plannedTiers().subList(0, 4));
++    }
++
++    @Test
++    public void oppositeHeadTurnIsAWrongAction() {
++        ActivePolicy p = new ActivePolicy().withOverrides(null, 1, List.of("turn_left"), false, 0, null);
++        ActiveSession s = new ActiveSession(p, true, 0.9, new Random(1));
++        List<LivenessEvent> ev = new ArrayList<>(s.start());
++        long[] ts = {0};
++        for (int i = 0; i < 4; i++) ev.addAll(s.process(neutral(ts)));
++        for (int i = 0; i < 4 && s.status == ActiveSession.Status.RUNNING; i++) {   // stop once decided
++            ev.addAll(s.process(acting(Action.TURN_RIGHT, p.stepParams(0), ts)));
++        }
++        assertTrue(ev.stream().anyMatch(e -> e.kind == LivenessEvent.Kind.CHALLENGE_RESULT && "WRONG_ACTION".equals(e.reason)));
++        assertEquals(LivenessEvent.Status.FAILED, decision(ev).status);
++    }
++
++    @Test
++    public void overridesApplyChallengePoolTimeoutsAndRetries() {
++        ActivePolicy p = new ActivePolicy().withOverrides(null, 4, List.of("blink", "smile", "nod"), false, 1,
++                List.of(10.0, 7.0));
++        // a live subject walks through the steps: per-step timeouts, the last one repeating
++        List<LivenessEvent> ev = runActive(new ActiveSession(p, true, 0.9, new Random(9)), p, true, 20000);
++        List<Long> timeouts = new ArrayList<>();
++        for (LivenessEvent e : ev) {
++            if (e.kind == LivenessEvent.Kind.CHALLENGE) {
++                timeouts.add(e.timeoutMs);
++                for (Action a : e.actions) assertTrue(List.of(Action.BLINK, Action.SMILE, Action.NOD).contains(a));
++            }
++        }
++        assertTrue(timeouts.size() >= 3);
++        LivenessEvent first = ev.stream().filter(e -> e.kind == LivenessEvent.Kind.CHALLENGE).findFirst().get();
++        assertEquals(1, first.step);
++        assertTrue(first.totalSteps >= 4);                       // min.challenges = 4
++        assertTrue(first.challengeLine(), first.challengeLine().startsWith("Step 1 of "));
++        assertEquals("Retry available \u2013 starting again shortly (last attempt).", LivenessEvent.retryLine(0));
++        assertEquals(Long.valueOf(10000), timeouts.get(0));
++        assertEquals(Long.valueOf(7000), timeouts.get(1));
++        assertEquals(Long.valueOf(7000), timeouts.get(2));
++        assertEquals(LivenessEvent.Status.PASSED, decision(ev).status);
++        // a static face times out: exactly the configured single retry, then failure
++        ev = runActive(new ActiveSession(p, true, 0.9, new Random(9)), p, false, 20000);
++        assertEquals(1, count(ev, LivenessEvent.Kind.RETRY));
++        assertEquals(LivenessEvent.Status.FAILED, decision(ev).status);
++    }
++
++    @Test(expected = IllegalArgumentException.class)
++    public void invalidOverridesAreRejected() {
++        new ActivePolicy().withOverrides(null, null, List.of("jump"), null, null, null);
++    }
++
++    // ------------------------------------------------------------------ hybrid
++
++    static Passive.FrameResult pad(double score, Passive.Config c) {
++        Passive.Decision d = Passive.decide(score, List.of(), true, c);
++        return new PadFrame(score, d).result;
++    }
++
++    /** Builds a FrameResult through the public decision path with a fixed fused score. */
++    static final class PadFrame {
++        final Passive.FrameResult result;
++
++        PadFrame(double score, Passive.Decision d) {
++            Passive.Classifier fixed = new Passive.Classifier() {
++                public Passive.ModelSpec spec() { return Passive.FAS; }
++                public float[] probabilities(float[] in) { return new float[]{(float) (1 - score), (float) score}; }
++            };
++            byte[] frame = new byte[300 * 300 * 3];
++            Arrays.fill(frame, (byte) 120);
++            for (int i = 0; i < frame.length; i += 7) frame[i] = (byte) 250;     // texture so the blur gate passes
++            Passive.Config cfg = new Passive.Config();
++            cfg.weights.clear();
++            cfg.weights.put("fas", 1.0);
++            Passive.FrameResult r = Passive.analyse(frame, 300, 300,
++                    List.of(new Passive.Face(new int[]{80, 80, 220, 220}, 0, 0)), 0, List.of(fixed), cfg);
++            assertEquals("synthetic frame should pass quality: " + r.reasons, List.of(), r.reasons);
++            assertEquals(d, r.decision);
++            result = r;
++        }
++    }
++
++    static List<LivenessEvent> runHybrid(HybridSession h, double score, boolean live, int maxFrames) {
++        List<LivenessEvent> all = new ArrayList<>(h.start());
++        long[] ts = {0};
++        List<FaceObservation> queue = new ArrayList<>();
++        ActivePolicy p = new ActivePolicy();
++        for (int f = 0; f < maxFrames && h.phase() != HybridSession.Phase.DONE; f++) {
++            if (h.retryAvailable()) all.addAll(h.retry());
++            long t = ts[0] + FRAME_MS;
++            Passive.FrameResult pad = h.needsPad(t) ? pad(score, new Passive.Config()) : null;
++            FaceObservation obs;
++            if (h.phase() == HybridSession.Phase.ACTIVE && live) {
++                if (queue.isEmpty()) queue.addAll(perform(lastChallenge(all).actions, p.stepParams(stepIndex(all)), ts));
++                obs = queue.remove(0);
++            } else {
++                obs = neutral(ts);
++            }
++            List<LivenessEvent> ev = h.process(obs.timestampMs, pad, obs);
++            all.addAll(ev);
++            for (LivenessEvent e : ev) if (e.kind == LivenessEvent.Kind.CHALLENGE) queue.clear();
++        }
++        return all;
++    }
++
++    @Test
++    public void hybridBonaFidePassesWithoutChallenges() {
++        HybridSession h = new HybridSession(new HybridSession.Settings(), List.of(), true, new Random(1));
++        List<LivenessEvent> ev = runHybrid(h, 0.95, true, 500);
++        assertEquals("PASSIVE_BONAFIDE", decision(ev).reason);
++        assertEquals(0, count(ev, LivenessEvent.Kind.CHALLENGE));
++        assertEquals(0.95, decision(ev).passiveScore, 1e-4);
++    }
++
++    @Test
++    public void hybridAttackFailsWithoutChallengesOrRevealingWhy() {
++        HybridSession h = new HybridSession(new HybridSession.Settings(), List.of(), true, new Random(1));
++        LivenessEvent d = decision(runHybrid(h, 0.1, true, 500));
++        assertEquals(LivenessEvent.Status.FAILED, d.status);
++        assertTrue(d.isAttack());
++        assertFalse(d.text.toLowerCase().contains("attack"));
++    }
++
++    @Test
++    public void hybridUncertainGoesToChallengesAndALiveUserPasses() {
++        HybridSession h = new HybridSession(new HybridSession.Settings(), List.of(), false, new Random(2));
++        List<LivenessEvent> ev = runHybrid(h, 0.6, true, 6000);
++        assertTrue(count(ev, LivenessEvent.Kind.CHALLENGE) >= 3);
++        assertEquals("ACTIVE_PASSED", decision(ev).reason);
++        assertEquals("Face verified successfully", decision(ev).text);
++    }
++
++    @Test
++    public void attackDuringChallengesEndsTheSession() {
++        HybridSession.Settings s = new HybridSession.Settings();
++        HybridSession h = new HybridSession(s, List.of(), true, new Random(2));
++        List<LivenessEvent> ev = new ArrayList<>(h.start());
++        long[] ts = {0};
++        for (int f = 0; f < 3000 && h.phase() != HybridSession.Phase.DONE; f++) {
++            long t = ts[0] + FRAME_MS;
++            double score = h.phase() == HybridSession.Phase.PASSIVE ? 0.6 : 0.1;   // swap in an attack later
++            Passive.FrameResult pad = h.needsPad(t) ? pad(score, new Passive.Config()) : null;
++            ev.addAll(h.process(t, pad, neutral(ts)));
++        }
++        assertEquals("ATTACK_DETECTED_DURING_ACTIVE", decision(ev).reason);
++    }
++
++    @Test
++    public void passiveNoResponseCanBeConfiguredToFail() {
++        HybridSession.Settings s = new HybridSession.Settings();
++        s.failOnPassiveNoResponse = true;
++        s.passive.maxDurationMs = 500;
++        HybridSession h = new HybridSession(s, List.of(), true, new Random(2));
++        List<LivenessEvent> ev = new ArrayList<>(h.start());
++        long[] ts = {0};
++        for (int f = 0; f < 100 && h.phase() != HybridSession.Phase.DONE; f++) {
++            long t = ts[0] += FRAME_MS;
++            Passive.FrameResult none = h.needsPad(t) ? Passive.analyse(new byte[30], 10, 1, List.of(), t, List.of(),
++                    new Passive.Config()) : null;
++            ev.addAll(h.process(t, none, FaceObservation.noFace(t, 0)));
++        }
++        assertEquals("PASSIVE_NO_RESPONSE", decision(ev).reason);
++        assertTrue(ev.stream().anyMatch(e -> e.guidance.contains("Keep your face within the capture area.")));
++    }
++
++    @Test
++    public void fusionSplitsAttackMassOnlyByTheTypingModel() {
++        double[] fused = Passive.fuse(List.of(Passive.UNIFIED, Passive.FAS),
++                List.of(new float[]{0.6f, 0.1f, 0.1f, 0.2f}, new float[]{0.6f, 0.4f}), new Passive.Config().weights);
++        assertEquals(0.5, fused[0], 1e-6);                       // mean of 0.6 and 0.4
++        assertEquals(0.5 * 0.5, fused[1], 1e-6);                 // presentation attack: 0.2 / 0.4 of the attack mass
++        assertEquals(0.5 * 0.25, fused[2], 1e-6);
++        assertEquals(0.5 * 0.25, fused[3], 1e-6);
++    }
++
++    @Test
++    public void qualityGateFlagsSmallDarkFaces() {
++        byte[] dark = new byte[200 * 200 * 3];
++        Quality q = Quality.assess(50, 0, 0, dark, 200, 200, 0.0, new Quality.Limits());
++        assertTrue(q.reasons.contains(Quality.Reason.FACE_TOO_SMALL));
++        assertTrue(q.reasons.contains(Quality.Reason.TOO_DARK));
++        assertTrue(q.reasons.contains(Quality.Reason.TOO_BLURRY));
++    }
++}
+diff --git a/android/settings.gradle b/android/settings.gradle
+index 2ec4312b32f55f62db783c0c77b443e8655050cc..dc49dbbaffd10828f530aeb7908814365b349a73 100644
+--- a/android/settings.gradle
++++ b/android/settings.gradle
+@@ -20,3 +20,4 @@ def flutterSdkPath = properties.getProperty("flutter.sdk")
+ assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+ apply from: "$flutterSdkPath/packages/flutter_tools/gradle/app_plugin_loader.gradle"
+ include ':transliterationmanager'
++include ':livenessmanager'
+diff --git a/lib/ui/onboard/widgets/operator_biometric_capture_scan_block_view.dart b/lib/ui/onboard/widgets/operator_biometric_capture_scan_block_view.dart
+index d74d2af0af602f9bc0a1a9af48d2c6f8ddfe0ff9..5ad18731b681bf762f89622f761826caaf4f5056 100644
+--- a/lib/ui/onboard/widgets/operator_biometric_capture_scan_block_view.dart
++++ b/lib/ui/onboard/widgets/operator_biometric_capture_scan_block_view.dart
+@@ -18,6 +18,7 @@ import 'package:registration_client/utils/biometrics_utils.dart';
+ import 'package:flutter_gen/gen_l10n/app_localizations.dart';
+ 
+ import 'package:registration_client/provider/auth_provider.dart';
++import 'package:registration_client/utils/face_liveness.dart';
+ 
+ class OperatorBiometricCaptureScanBlockView extends StatefulWidget {
+   const OperatorBiometricCaptureScanBlockView({super.key});
+@@ -381,8 +382,11 @@ class _OperatorBiometricCaptureScanBlockViewState
+           onPressed: () async {
+             if (biometricAttributeData.exceptions.contains(false)) {
+               List<Uint8List?> tempImageList = [];
+-              await BiometricsApi().invokeDiscoverSbi("operatorBiometrics",
++              final String sbi = await BiometricsApi().invokeDiscoverSbi("operatorBiometrics",
+                   biometricAttributeData.title.replaceAll(" ", ""));
++              if (handleFaceLivenessRejection(sbi)) {
++                return;
++              }
+               await BiometricsApi()
+                   .getBestBiometrics("operatorBiometrics",
+                       biometricAttributeData.title.replaceAll(" ", ""))
+diff --git a/lib/ui/process_ui/widgets/biometric_scan_middle_block.dart b/lib/ui/process_ui/widgets/biometric_scan_middle_block.dart
+index cb799d7cd575aafe27088056e820f375f2cad0b4..d35f6aa9d8037b8e9be00bbbac0c244db46d3d27 100644
+--- a/lib/ui/process_ui/widgets/biometric_scan_middle_block.dart
++++ b/lib/ui/process_ui/widgets/biometric_scan_middle_block.dart
+@@ -21,6 +21,7 @@ import 'package:registration_client/utils/biometrics_utils.dart';
+ 
+ import '../../../provider/global_provider.dart';
+ import 'package:flutter_gen/gen_l10n/app_localizations.dart';
++import 'package:registration_client/utils/face_liveness.dart';
+ 
+ class BiometricScanMiddleBlock extends StatefulWidget {
+   const BiometricScanMiddleBlock(
+@@ -190,8 +191,11 @@ class _BiometricScanMiddleBlockState extends State<BiometricScanMiddleBlock> {
+                       onPressed: () async {
+                         if (widget.biometricAttributeData.attemptNo <
+                             widget.biometricAttributeData.noOfCapturesAllowed) {
+-                          await BiometricsApi().invokeDiscoverSbi(
++                          final String sbi = await BiometricsApi().invokeDiscoverSbi(
+                               widget.field.id!, widget.parameterTitle);
++                          if (handleFaceLivenessRejection(sbi)) {
++                            return;
++                          }
+                           await BiometricsApi()
+                               .extractImageValues(
+                                   widget.field.id!, widget.parameterTitle)
+@@ -295,8 +299,11 @@ class _BiometricScanMiddleBlockState extends State<BiometricScanMiddleBlock> {
+                 if (widget.biometricAttributeData.attemptNo <
+                     widget.biometricAttributeData.noOfCapturesAllowed) {
+                   List<Uint8List?> temp = [];
+-                  await BiometricsApi().invokeDiscoverSbi(
++                  final String sbi = await BiometricsApi().invokeDiscoverSbi(
+                       widget.field.id!, widget.parameterTitle);
++                  if (handleFaceLivenessRejection(sbi)) {
++                    return;
++                  }
+                   await BiometricsApi()
+                       .getBestBiometrics(
+                           widget.field.id!, widget.parameterTitle)
+diff --git a/lib/ui/process_ui/widgets_mobile/biometric_capture_scan_block_portrait.dart b/lib/ui/process_ui/widgets_mobile/biometric_capture_scan_block_portrait.dart
+index 7146ff4cc94be2d159e75b7e804c19c2ab847abd..db9ca363035cd7369485c15891c0ab14707ce24b 100644
+--- a/lib/ui/process_ui/widgets_mobile/biometric_capture_scan_block_portrait.dart
++++ b/lib/ui/process_ui/widgets_mobile/biometric_capture_scan_block_portrait.dart
+@@ -25,6 +25,7 @@ import 'package:flutter_gen/gen_l10n/app_localizations.dart';
+ 
+ import 'package:registration_client/utils/app_config.dart';
+ import 'package:registration_client/utils/biometrics_utils.dart';
++import 'package:registration_client/utils/face_liveness.dart';
+ 
+ class BiometricCaptureScanBlockPortrait extends StatefulWidget {
+   const BiometricCaptureScanBlockPortrait({super.key, required this.field});
+@@ -597,8 +598,11 @@ class _BiometricCaptureScanBlockPortraitState
+               if (biometricAttributeData.attemptNo <
+                   biometricAttributeData.noOfCapturesAllowed) {
+                 List<Uint8List?> tempImageList = [];
+-                await BiometricsApi().invokeDiscoverSbi(widget.field.id!,
++                final String sbi = await BiometricsApi().invokeDiscoverSbi(widget.field.id!,
+                     biometricAttributeData.title.replaceAll(" ", ""));
++                if (handleFaceLivenessRejection(sbi)) {
++                  return;
++                }
+                 await BiometricsApi()
+                     .getBestBiometrics(widget.field.id!,
+                     biometricAttributeData.title.replaceAll(" ", ""))
+diff --git a/lib/utils/face_liveness.dart b/lib/utils/face_liveness.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..aaf77c0e5519a4899f0f2fd9c5fca302fcb7fa8e
+--- /dev/null
++++ b/lib/utils/face_liveness.dart
+@@ -0,0 +1,25 @@
++import 'package:flutter/material.dart';
++import 'package:registration_client/main.dart';
++
++/// Face liveness / PAD gate result handling for the biometric capture screens.
++///
++/// When face liveness does not allow a capture, the native `invokeDiscoverSbi` returns
++/// `LIVENESS_<STATUS>|<user message>` (STATUS: FAILED, TIMED_OUT, CANCELLED, ENGINE_ERROR, BLOCKED) instead of
++/// starting the SBI capture. The message is already user-safe (no PAD details). Shows it and returns true, in which
++/// case the caller must not continue with the capture (no images to extract, no capture attempt consumed).
++bool handleFaceLivenessRejection(String? sbiResult) {
++  if (sbiResult == null || !sbiResult.startsWith('LIVENESS_')) {
++    return false;
++  }
++  final int sep = sbiResult.indexOf('|');
++  final String status = sep > 0 ? sbiResult.substring(9, sep) : sbiResult.substring(9);
++  final String message = sep > 0
++      ? sbiResult.substring(sep + 1)
++      : 'Face verification could not be completed. Please try again.';
++  if (status != 'CANCELLED') {
++    rootScaffoldMessengerKey.currentState?.showSnackBar(
++      SnackBar(content: Text(message), duration: const Duration(seconds: 6)),
++    );
++  }
++  return true;
++}

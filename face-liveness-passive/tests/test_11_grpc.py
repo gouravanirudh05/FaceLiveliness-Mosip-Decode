@@ -115,6 +115,11 @@ def test_get_info(serve):
     info = json.loads(stub.GetInfo(pb.GetInfoRequest()).json)
     assert set(info["models"]) == {"unified", "fas"}
     assert info["config"]["decision"]["accept_threshold"] == 0.8
+    caps = info["capabilities"]
+    assert caps["modes"] == ["passive", "active", "hybrid"]
+    assert {"blink", "smile", "turn_left", "turn_right", "nod"} <= set(caps["challenge_types"])
+    assert caps["attack_classes"] == ["deepfake", "presentation_attack", "synthetic"]
+    assert "jpeg" in caps["frame_encodings"] and caps["per_session_policy"] is True
 
 
 # ---------------------------------------------------------------- streaming
