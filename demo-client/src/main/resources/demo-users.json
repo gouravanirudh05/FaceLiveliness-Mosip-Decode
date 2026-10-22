@@ -1,0 +1,14 @@
+[
+  {
+    "id": "110011",
+    "name": "Ravi Kumar",
+    "password": "mosip123",
+    "roles": ["REGISTRATION_OFFICER"]
+  },
+  {
+    "id": "110012",
+    "name": "Anita Sharma",
+    "password": "mosip123",
+    "roles": ["REGISTRATION_SUPERVISOR", "REGISTRATION_OFFICER"]
+  }
+]

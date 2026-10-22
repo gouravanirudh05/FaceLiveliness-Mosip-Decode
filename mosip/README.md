@@ -24,7 +24,8 @@ Clients. Liveness and PAD run before the face is captured, and the capture proce
 | `android-registration-client/` | Submodule `mosip/android-registration-client`, pinned to upstream `release-1.2.x`; local branch **`face-liveness`** |
 | `mosip-mock-services/` | Submodule `mosip/mosip-mock-services` `release-1.2.0.x`; **MockMDS** is MOSIP's mock L0 face device (SBI 0.9.5) |
 | `patches/<client>-face-liveness.patch` | The changes to each client. `setup.sh` applies them on a fresh clone; `scripts/make-patches.sh` regenerates them |
-| `scripts/` | `setup.sh`, `make-patches.sh`, `start-services.sh`, `stop-services.sh`, `run-webcam-device.sh`, `env.sh` |
+| `scripts/` | `setup.sh`, `make-patches.sh`, `start-services.sh`, `stop-services.sh`, `run-webcam-device.sh`, `run-reg-client.sh`, `env.sh` |
+| `../demo-client/` | Look-alike Registration Client that runs the client's own liveness code in all three flows without a MOSIP server (see below) |
 | `tools/mockmds_webcam_feeder.py` | Turns MockMDS into a live device by feeding it webcam frames |
 | `tools/perf_interop.py` | Performance and interoperability tests against the engine and the SBI device |
 | `../face-liveness-desktop/liveness-grpc-client/` | Java client for the liveness engine, with gRPC and protobuf shaded in; the desktop client depends on it |
@@ -124,11 +125,19 @@ mosip.registration.face.liveness.engine.error.policy=DENY
   screen. After the last retry the user gets the spec's "recovery process" message.
 - **Fail closed:** an unreachable engine or an invalid configuration denies the capture.
 
+## Demo client (no MOSIP server)
+
+`../demo-client/` is a look-alike of the Desktop client's flows: login with face, operator onboarding, new
+registration with resident face capture, operator authentication and supervisor approval. It runs the client's
+own liveness classes unchanged, with no MOSIP server, and keeps its data in an embedded Derby database. Run it with
+`demo-client/run.sh`. See `demo-client/README.md`.
+
 ## Limitations
 
-- **The real client UI has not been run.** Without a MOSIP server the client cannot get past its first login
-  (tracker T07–T10). The integration is verified by `FaceLivenessGuardTest` with the real client classes, the
-  real engine and MockMDS.
+- **The real client UI has not been run past login.** Without a MOSIP server the client cannot get past its
+  first login (tracker T07–T10). The integration is verified by `FaceLivenessGuardTest` with the real client
+  classes, the real engine and MockMDS. It is also shown end to end in the demo client, with the same classes
+  and screens copied from the client.
 - **Android has not been run on a device yet** (T12, T13). The engine port is verified against Python by
   parity tests.
 - MockMDS RCAPTURE returns its profile face, not the camera frame.

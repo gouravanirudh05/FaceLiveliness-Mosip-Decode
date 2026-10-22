@@ -149,7 +149,22 @@ Once a server exists:
 --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED
 ```
 
-Without a TPM (Linux development), the client uses local software keys in `~/.mosipkeys`.
+The client uses the machine's TPM 2.0 when it can open `/dev/tpmrm0`. On Linux that needs the `tss` group:
+`sudo usermod -aG tss $USER`, then log in again or run `sg tss -c mosip/scripts/run-reg-client.sh`. Without TPM
+access it falls back to software keys in `registration-client/.mosipkeys/`. A server only accepts the key that
+was registered for the machine.
+
+### Without a server: the demo client
+
+`demo-client/` runs the client's own liveness code in the login, onboarding, new registration, operator
+authentication and supervisor approval flows. No MOSIP server is involved; data goes to an embedded Derby database
+in `demo-client/data`. See `demo-client/README.md`.
+
+```bash
+mosip/scripts/start-services.sh       # engine (50052) + MockMDS (4501)
+mosip/scripts/run-webcam-device.sh    # optional: your webcam instead of MockMDS's still photo
+demo-client/run.sh                    # builds on first run; users 110011 (officer) / 110012 (supervisor), password mosip123
+```
 
 ## 7. Results so far
 
