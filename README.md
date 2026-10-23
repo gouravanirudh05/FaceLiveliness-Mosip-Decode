@@ -20,8 +20,8 @@ cd face-liveness-passive
 uv sync --active #will build both active and passive modules
 
 # Now on three terminals (use source/.venv/bin/activate to activate the virtual environment in each)
-uv run python -m active-liveness.server
-uv run python -m passive-liveness.server
+uv run python -m active_liveness.server
+uv run python -m passive_liveness.server
 
 # To run the browser based client.
 uv pip install fastapi uvicorn websockets
