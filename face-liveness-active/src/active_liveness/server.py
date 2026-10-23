@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 import grpc
 
-from .analyzer import AnalyzerError, FaceAnalyzer, MediaPipeFaceAnalyzer
+from .analyzer import FaceAnalyzer, MediaPipeFaceAnalyzer
 from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from .events import (
     ENGINE_ERROR_MESSAGE, ChallengePrompt, ChallengeResult, Decision, Event, Feedback,
@@ -73,8 +73,8 @@ class ActiveLivenessServicer(pb_grpc.ActiveLivenessServiceServicer):
                     if policy.enabled:
                         try:
                             analyzer = self.analyzer_factory()
-                        except AnalyzerError as e:
-                            log.error("cannot create analyzer: %s", e)
+                        except Exception as e:
+                            log.error("cannot create analyzer: %s: %s", type(e).__name__, e)
                             yield pb.ServerMessage(decision=pb.Decision(
                                 status=pb.DECISION_FAILED, reason=pb.FAILURE_ENGINE_ERROR,
                                 message=ENGINE_ERROR_MESSAGE))

@@ -10,3 +10,20 @@
 | [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) | Technical design (architecture, flows, configuration, interfaces, security, ISO/IEC 30107) |
 | [docs/MOSIP_Liveness_Tracker.xlsx](docs/MOSIP_Liveness_Tracker.xlsx) | Team tracker: open tasks to claim, and the status of every line of the problem statement |
 | [browser.py](browser.py) | Browser based webcam demo client for all three modes |
+
+How to get started with browser.py:
+```bash
+# clone the repo
+uv venv --python 3.12 #create a virtual environment
+source ~/.venv/bin/activate
+cd face-liveness-passive
+uv sync --active #will build both active and passive modules
+
+# Now on three terminals (use source/.venv/bin/activate to activate the virtual environment in each)
+uv run python -m active-liveness.server
+uv run python -m passive-liveness.server
+
+# To run the browser based client.
+uv pip install fastapi uvicorn websockets
+uv run --active python browser.py
+```

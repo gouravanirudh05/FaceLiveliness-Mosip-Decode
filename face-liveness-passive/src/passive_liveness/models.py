@@ -113,8 +113,8 @@ class FSFMClassifier:
             state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
             model = build_vit(spec.arch, len(spec.labels))
             model.load_state_dict(state, strict=True)
-        except (RuntimeError, KeyError, OSError) as e:
-            raise ModelError(f"cannot load {path.name}: {e}") from e
+        except Exception as e:  # unpickling / truncated / mismatching checkpoints raise many types
+            raise ModelError(f"cannot load {path.name}: {type(e).__name__}: {e}") from e
         self.model = model.to(self.device).eval()
         self._lock = threading.Lock()
 

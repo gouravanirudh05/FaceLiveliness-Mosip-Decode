@@ -23,7 +23,7 @@ from enum import Enum
 
 import numpy as np
 
-from .analyzer import AnalyzerError, FaceAnalyzer
+from .analyzer import FaceAnalyzer
 from .challenges import Challenge, ChallengePlanner
 from .config import LivenessPolicy
 from .detectors import DetectorState, Hint, create_challenge_detector
@@ -76,7 +76,19 @@ class ActiveLivenessSession:
         self.status = SessionStatus.NOT_STARTED
         self.attempt_index = -1
         self.history: list[Challenge] = []   # every challenge issued, across attempts
-        self._last_ts: int | None = None
+        self._last_ts: int | None = None        
+        # per-attempt / per-step state; (re)initialised by _begin_attempt / _begin_step but
+        # declared here so that e.g. planned_tiers is safe before start()
+        self._tiers: list[Tier] = []
+        self._extras = 0
+        self._used: set[Action] = set()
+        self._step = 0
+        self._challenge: Challenge | None = None
+        self._detector = None
+        self._timeout_ms = 0
+        self._step_start_ms: int | None = None
+        self._invalid_run = 0
+        self._last_feedback: tuple | None = None
 
     # ------------------------------------------------------------ public API
 
@@ -98,8 +110,8 @@ class ActiveLivenessSession:
             return [self._invalid_frame()]
         try:
             obs = self.analyzer.analyze(rgb, timestamp_ms)
-        except AnalyzerError as e:
-            self._audit("engine_error", error=str(e))
+        except Exception as e:
+            self._audit("engine_error", error=f"{type(e).__name__}: {e}")
             return [self._finish(SessionStatus.FAILED, DecisionStatus.FAILED,
                                  ENGINE_ERROR_MESSAGE, FailureReason.ENGINE_ERROR)]
         return self.process_observation(obs)

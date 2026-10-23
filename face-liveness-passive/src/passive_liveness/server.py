@@ -141,7 +141,13 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
             rgb = decode_frame(request.data, enc, request.width, request.height)
         except InputError as e:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
-        return frame_to_proto(self.engine.analyze_image(rgb, explain=request.explain))
+        try:
+            return frame_to_proto(self.engine.analyze_image(rgb, explain=request.explain))
+        except InputError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+        except Exception:
+            log.exception("image analysis failed")
+            context.abort(grpc.StatusCode.INTERNAL, "internal error while analysing the image")
 
     def AnalyzeVideo(self, request, context):
         if not request.data:
@@ -208,7 +214,12 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
                 except InputError as e:
                     yield pb.StreamResponse(error=_error(pb.ERROR_INVALID_FRAME, str(e)))
                     continue
-                fa = stream.push(rgb, ts)
+                try:
+                    fa = stream.push(rgb, ts)
+                except Exception:
+                    log.exception("passive stream failed")
+                    yield pb.StreamResponse(error=_error(pb.ERROR_INTERNAL, "internal error while analysing the frame"))
+                    return
                 if fa is not None:
                     yield pb.StreamResponse(frame=frame_to_proto(fa))
                 if stream.done:
@@ -244,6 +255,10 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
                     except PolicyError as e:
                         yield pb.HybridServerMessage(error=_error(pb.ERROR_INVALID_REQUEST, f"invalid policy: {e}"))
                         return
+                    except Exception:
+                        log.exception("cannot create hybrid session")
+                        yield pb.HybridServerMessage(error=_error(pb.ERROR_INTERNAL, "cannot start the session"))
+                        return
                     events = session.start()
                 elif kind == "frame":
                     if session.retry_available:
@@ -253,7 +268,13 @@ class PassiveLivenessServicer(pb_grpc.PassiveLivenessServiceServicer):
                     except InputError as e:
                         yield pb.HybridServerMessage(error=_error(pb.ERROR_INVALID_FRAME, str(e)))
                         continue
-                    events = session.process_frame(rgb, ts)
+                    try:
+                        events = session.process_frame(rgb, ts)
+                    except Exception:
+                        log.exception("hybrid session failed")
+                        yield pb.HybridServerMessage(error=_error(pb.ERROR_INTERNAL,
+                                                                 "internal error while analysing the frame"))
+                        return
                 elif kind == "retry":
                     if not session.retry_available:
                         yield pb.HybridServerMessage(error=_error(pb.ERROR_INVALID_REQUEST, "no retry available"))

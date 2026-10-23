@@ -33,9 +33,9 @@ policy:
   max_retries: 3
   # Strictness per step position: step N uses entry N, later steps reuse the last entry.
   steps:
-    - { timeout_s: 8, yaw_deg: 15, pitch_deg: 10 }
-    - { timeout_s: 6, yaw_deg: 20, pitch_deg: 12 }
-    - { timeout_s: 5, yaw_deg: 25, pitch_deg: 15 }
+    - { timeout_s: 18, yaw_deg: 15, pitch_deg: 10 }
+    - { timeout_s: 16, yaw_deg: 20, pitch_deg: 12 }
+    - { timeout_s: 12, yaw_deg: 25, pitch_deg: 15 }
   escalation:
     passive_weak_threshold: 0.5
     # Used when no passive score is supplied. 0.0 treats "no passive evidence" as weak,
@@ -59,6 +59,9 @@ policy:
     hold_frames: 3
     neutral_frames: 3
     max_invalid_frames: 3
+    wrong_action_frames: 2   # consecutive opposite-movement frames before WRONG_ACTION (filters jitter)
+    nod_dip_frames: 2        # frames the dip must last for a nod
+    blink_max_ms: 1500       # eyes shut longer than this is not a blink
 
 # Per-workflow overrides, deep-merged over `policy`. Example:
 #   supervisor:

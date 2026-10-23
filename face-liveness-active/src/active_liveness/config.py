@@ -17,6 +17,8 @@ import dataclasses
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Mapping
+import os
+import sys
 
 import yaml
 
@@ -53,6 +55,9 @@ class Thresholds:
     hold_frames: int = 3             # consecutive frames an action must be held
     neutral_frames: int = 3          # consecutive neutral frames before a challenge arms
     max_invalid_frames: int = 3      # consecutive no-face / multi-face frames before progress resets
+    wrong_action_frames: int = 2     # consecutive frames of the opposite movement before WRONG_ACTION
+    nod_dip_frames: int = 2          # frames the dip must last, so a one-frame pose spike is no nod
+    blink_max_ms: float = 1500.0     # eyes shut for longer than this is not a blink
 
 
 @dataclass(frozen=True)
@@ -101,8 +106,22 @@ class AppConfig:
         return self.policies[workflow]
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
+def _default_config_path() -> Path:
+    """Config location that also works outside a source checkout.
 
+    Order: ``ACTIVE_LIVENESS_CONFIG`` env var, the PyInstaller bundle (``sys._MEIPASS``),
+    then the source tree layout (``<repo>/config/default.yaml``).
+    """
+    env = os.environ.get("ACTIVE_LIVENESS_CONFIG")
+    if env:
+        return Path(env)
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        return Path(bundle) / "config" / "default.yaml"
+    return Path(__file__).resolve().parents[2] / "config" / "default.yaml"
+
+
+DEFAULT_CONFIG_PATH = _default_config_path()
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
     path = Path(path)
@@ -180,6 +199,8 @@ def _parse_policy(raw: Mapping[str, Any], where: str) -> LivenessPolicy:
             raise ConfigError(f"{where}.escalation.{name} must be within [0, 1]")
     if escalation.max_extra_challenges < 0:
         raise ConfigError(f"{where}.escalation.max_extra_challenges must be >= 0")
+    if not 0.0 <= escalation.weak_margin <= 1.0:
+        raise ConfigError(f"{where}.escalation.weak_margin must be within [0, 1]")
 
     thresholds = _dataclass_from(Thresholds, _mapping(raw["thresholds"], f"{where}.thresholds"),
                                  f"{where}.thresholds")
@@ -189,6 +210,19 @@ def _parse_policy(raw: Mapping[str, Any], where: str) -> LivenessPolicy:
         raise ConfigError(f"{where}.thresholds.smile_neutral must be < smile")
     if thresholds.mouth_neutral >= thresholds.mouth_open:
         raise ConfigError(f"{where}.thresholds.mouth_neutral must be < mouth_open")
+    # zero frame counts would make the detectors divide by zero / complete instantly
+    for name in ("neutral_frames", "hold_frames", "wrong_action_frames", "nod_dip_frames"):
+        if getattr(thresholds, name) < 1:
+            raise ConfigError(f"{where}.thresholds.{name} must be >= 1")
+    if not 0.0 < thresholds.nod_return_ratio < 1.0:
+        raise ConfigError(f"{where}.thresholds.nod_return_ratio must be within (0, 1)")
+    for name in ("blink_closed", "blink_open", "smile", "smile_neutral", "mouth_open",
+                 "mouth_neutral", "gaze_vertical"):
+        if not 0.0 < getattr(thresholds, name) <= 1.0:
+            raise ConfigError(f"{where}.thresholds.{name} must be within (0, 1]")
+    for name in ("gaze_horizontal", "head_still_deg", "blink_max_ms"):
+        if getattr(thresholds, name) <= 0.0:
+            raise ConfigError(f"{where}.thresholds.{name} must be > 0")
 
     return LivenessPolicy(
         enabled=_bool(raw["enabled"], f"{where}.enabled"),

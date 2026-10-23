@@ -16,22 +16,6 @@ python -m pytest                          # 164 tests, ~30 s
 python -m active_liveness.server          # listens on 127.0.0.1:50051 (config/default.yaml)
 ```
 
-### Webcam demo (manual testing)
-
-The webcam client lives at the repository root and covers the active, passive and hybrid modes.
-With the server running, in a second terminal (from the repository root):
-
-```bash
-python webcam_client.py --mode active                # camera 0, resident workflow, no passive score
-python webcam_client.py --mode active --camera 1 --workflow supervisor --passive 0.3
-python webcam_client.py --mode active --headless --source some_video.mp4   # no window, prints events
-```
-
-The window shows the prompt, a countdown, live feedback, a progress bar and a face guide.
-Keys: **R** retry (when offered), **N** new session (after a decision), **Q/Esc** quit.
-Frames go to the server un-mirrored. The preview is mirrored like a selfie view
-(`--no-mirror-preview` turns that off). "Left" always means *your* left.
-
 To regenerate the gRPC stubs after editing `proto/active_liveness.proto`, run `./scripts/generate_proto.sh`.
 The Java Registration Client generates its client from the same `.proto`
 (`java_package = io.mosip.extensions.liveness.active.grpc`).

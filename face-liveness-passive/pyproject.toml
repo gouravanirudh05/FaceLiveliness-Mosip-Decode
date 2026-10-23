@@ -16,11 +16,10 @@ dependencies = [
     "grpcio==1.84.0",
     "protobuf",
     "PyYAML",
+    "active-liveness",
 ]
 
 [project.optional-dependencies]
-# Hybrid passive + active flow (and its gRPC messages) needs the sibling active module.
-hybrid = ["active-liveness"]
 dev = ["pytest", "grpcio-tools==1.84.0"]
 
 [project.scripts]
@@ -36,3 +35,6 @@ testpaths = ["tests"]
 addopts = "-ra"
 faulthandler_timeout = 300
 markers = ["models: needs the downloaded FSFM checkpoints (skipped if missing)"]
+
+[tool.uv.sources]
+active-liveness = { path = "../face-liveness-active", editable = true }

@@ -29,7 +29,10 @@ def decode_frame(data: bytes, encoding: FrameEncoding = FrameEncoding.ENCODED,
     if encoding is FrameEncoding.ENCODED:
         if not data:
             raise InputError("empty image data")
-        bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        try:
+            bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        except cv2.error as e:
+            raise InputError(f"cannot decode image data: {e}") from e
         if bgr is None:
             raise InputError("cannot decode image data")
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)

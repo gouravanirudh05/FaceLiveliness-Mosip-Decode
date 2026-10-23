@@ -76,6 +76,7 @@ class ActionDetector(ABC):
         self._window: deque[FaceObservation] = deque(maxlen=self.t.neutral_frames)
         self.baseline: dict[str, float] | None = None
         self._final: DetectorUpdate | None = None
+        self._wrong = 0
         self._reset_tracking()
 
     def update(self, obs: FaceObservation) -> DetectorUpdate:
@@ -92,11 +93,26 @@ class ActionDetector(ABC):
                 name: sum(fn(o) for o in self._window) / len(self._window)
                 for name, fn in _FEATURES.items()
             }
+            self._after_baseline()
             return DetectorUpdate(DetectorState.IN_PROGRESS, progress=0.0)
         result = self._track(obs)
         if result.state in (DetectorState.COMPLETED, DetectorState.WRONG_ACTION):
             self._final = result
         return result
+
+    def _after_baseline(self) -> None:
+        """Hook: derive extra reference values from the baseline window (default: none)."""
+        pass
+
+    def _persistent_wrong(self, wrong: bool) -> bool:
+        """True once the opposite movement was seen in ``wrong_action_frames`` consecutive frames.
+
+        A single frame of landmark / blendshape jitter must not fail a whole attempt. The detector
+        must not fail if the subject is not moving, so the opposite movement must be seen in
+        ``wrong_action_frames`` consecutive frames.
+        """
+        self._wrong = self._wrong + 1 if wrong else 0
+        return self._wrong >= self.t.wrong_action_frames
 
     def _window_stable(self) -> bool:
         for name in self.stable_features:
@@ -133,10 +149,17 @@ class ActionDetector(ABC):
 
 
 class ExpressionDetector(ActionDetector):
-    """Smile / open mouth: blendshape rises from below `neutral` to above `threshold`."""
+    """Smile / open mouth: blendshape rises from below `neutral` to above `threshold`.
+    A resting level below `neutral` is always accepted. People whose resting face sits a
+    little higher (e.g. a natural resting smile) are accepted too, up to halfway between
+    `neutral` and `threshold`, provided the signal is steady; for them the action must
+    rise by the same amount (`threshold - neutral`) above their own resting level.
+    A face already at or above that limit (a photo of a smiling face) never arms."""
 
     def __init__(self, t: Thresholds, signal: str, threshold: float, neutral: float):
         self._signal, self._threshold, self._neutral = signal, threshold, neutral
+        self._rise = threshold - neutral
+        self._rest_limit = neutral + 0.5 * self._rise
         super().__init__(t)
 
     def _value(self, obs):
@@ -144,13 +167,24 @@ class ExpressionDetector(ActionDetector):
 
     def _reset_tracking(self):
         self._hold, self._peak = 0, 0.0
+        self._target = self._threshold
 
     def _is_neutral(self, obs):
-        return self._value(obs) < self._neutral
+        return self._value(obs) < self._rest_limit
 
     def _track(self, obs):
         v = self._value(obs)
-        return self._hold_update(v >= self._threshold, v, self._threshold)
+        return self._hold_update(v >= self._target, v, self._target)
+
+    def _window_stable(self):
+        values = [self._value(o) for o in self._window]
+        if max(values) < self._neutral:
+            return True                     # clearly neutral: no steadiness requirement
+        return max(values) - min(values) <= self.t.stability_gaze
+
+    def _after_baseline(self):
+        rest = sum(self._value(o) for o in self._window) / len(self._window)
+        self._target = max(self._threshold, rest + self._rise)
 
 
 class BlinkDetector(ActionDetector):
@@ -158,6 +192,7 @@ class BlinkDetector(ActionDetector):
 
     def _reset_tracking(self):
         self._closed_seen, self._peak = False, 0.0
+        self._closed_at = self._closed_last = 0
 
     def _is_neutral(self, obs):
         return obs.blink < self.t.blink_open
@@ -165,10 +200,17 @@ class BlinkDetector(ActionDetector):
     def _track(self, obs):
         v = obs.blink
         if v >= self.t.blink_closed:
+            if not self._closed_seen:
+                self._closed_at = obs.timestamp_ms
             self._closed_seen = True
+            self._closed_last = obs.timestamp_ms
             self._peak = max(self._peak, v)
             return DetectorUpdate(DetectorState.IN_PROGRESS, 0.6)
         if self._closed_seen and v < self.t.blink_open:
+            if self._closed_last - self._closed_at > self.t.blink_max_ms:
+                # eyes were shut for a long time: not a blink; wait for a real one
+                self._closed_seen, self._peak = False, 0.0
+                return DetectorUpdate(DetectorState.IN_PROGRESS, 0.0)
             return DetectorUpdate(DetectorState.COMPLETED, 1.0, _margin(self._peak, self.t.blink_closed))
         if self._closed_seen:
             return DetectorUpdate(DetectorState.IN_PROGRESS, 0.8)
@@ -192,8 +234,12 @@ class HeadTurnDetector(ActionDetector):
 
     def _track(self, obs):
         d = self._delta(obs, self._feature) * self._sign
-        if d <= -self._angle:
+        opposite = d <= -self._angle
+        if self._persistent_wrong(opposite):
             return DetectorUpdate(DetectorState.WRONG_ACTION)
+        if opposite:                    # not persistent yet: neither wrong nor progress
+            self._hold, self._peak = 0, 0.0
+            return DetectorUpdate(DetectorState.IN_PROGRESS, 0.0)
         return self._hold_update(d >= self._angle, d, self._angle)
 
 
@@ -207,17 +253,22 @@ class NodDetector(ActionDetector):
         super().__init__(t)
 
     def _reset_tracking(self):
-        self._dip = 0.0
+        self._dip, self._dip_frames = 0.0, 0
 
     def _is_neutral(self, obs):
         return True
 
     def _track(self, obs):
         down = -self._delta(obs, "pitch")
+        if down >= self._angle:
+            self._dip_frames += 1
         if down >= self._angle or self._dip:
             self._dip = max(self._dip, down)
             if down <= self._dip * self.t.nod_return_ratio:
-                return DetectorUpdate(DetectorState.COMPLETED, 1.0, _margin(self._dip, self._angle))
+                if self._dip_frames >= self.t.nod_dip_frames:
+                    return DetectorUpdate(DetectorState.COMPLETED, 1.0, _margin(self._dip, self._angle))
+                self._dip, self._dip_frames = 0.0, 0     # a one-frame spike, not a nod
+                return DetectorUpdate(DetectorState.IN_PROGRESS, 0.0)
             return DetectorUpdate(DetectorState.IN_PROGRESS, 0.6)
         return DetectorUpdate(DetectorState.IN_PROGRESS, 0.5 * _clamp01(down / self._angle))
 
@@ -226,7 +277,7 @@ class _GazeDetector(ActionDetector):
     """Eyes move while the head stays within `head_still_deg` of its baseline."""
 
     def _reset_tracking(self):
-        self._hold, self._peak = 0, 0.0
+        self._hold, self._peak, self._wrong = 0, 0.0, 0
 
     def _is_neutral(self, obs):
         return obs.blink < self.t.blink_closed
@@ -241,8 +292,11 @@ class _GazeDetector(ActionDetector):
             return DetectorUpdate(DetectorState.IN_PROGRESS, 0.0, hint=Hint.KEEP_HEAD_STILL)
         toward, away = self._signals(obs)
         thr = self._threshold()
-        if away >= thr:
+        if self._persistent_wrong(away >= thr):
             return DetectorUpdate(DetectorState.WRONG_ACTION)
+        if away >= thr:                 # not persistent yet: neither wrong nor progress
+            self._hold, self._peak = 0, 0.0
+            return DetectorUpdate(DetectorState.IN_PROGRESS, 0.0)
         return self._hold_update(toward >= thr and self._eyes_ok(obs), toward, thr)
 
     def _eyes_ok(self, obs):

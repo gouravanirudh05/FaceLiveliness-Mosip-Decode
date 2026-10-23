@@ -23,7 +23,10 @@ def decode_frame(data: bytes, encoding: FrameEncoding, width: int = 0, height: i
     if not data:
         raise FrameDecodeError("empty frame data")
     if encoding in (FrameEncoding.JPEG, FrameEncoding.PNG):
-        bgr = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        try:
+            bgr = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        except cv2.error as e:
+            raise FrameDecodeError(f"cannot decode {encoding.value} frame: {e}") from e
         if bgr is None:
             raise FrameDecodeError(f"cannot decode {encoding.value} frame (corrupt or incomplete)")
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
