@@ -1,0 +1,351 @@
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
+index e84fda6..9b9ef87 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
+@@ -102,6 +102,9 @@ public class AuthTokenUtilService {
+     }
+ 
+     public boolean hasAnyValidToken() {
++        if (MockBackend.isEnabled()) {
++            return true;
++        }
+         UserToken userToken = userTokenRepository.findTopByTokenExpiryGreaterThanAndUserDetailIsActiveTrueOrderByTokenExpiryDesc(System.currentTimeMillis()/1000);
+         if(userToken != null) {
+             return true;
+@@ -204,6 +207,36 @@ public class AuthTokenUtilService {
+ 
+     public AuthTokenDTO getAuthTokenAndRefreshToken(LoginMode loginMode, LoginUserDTO loginUserDTO) throws RegBaseCheckedException {
+         LOGGER.info("Fetching Auth Token and refresh token based on Login Mode >>> {}",loginMode);
++
++        if (MockBackend.isEnabled()) {
++            try {
++                // Mock mode: fabricate a token locally, no server round-trip, no
++                // crypto/signature involved. Any userId/password typed is accepted.
++                String role = "REGISTRATION_SUPERVISOR";
++                String token = MockBackend.buildMockJwt(loginUserDTO.getUserId(), role);
++                String refreshToken = MockBackend.buildMockJwt(loginUserDTO.getUserId(), role);
++
++                AuthTokenDTO authTokenDTO = new AuthTokenDTO();
++                authTokenDTO.setCookie(String.format("Authorization=%s", token));
++                authTokenDTO.setLoginMode(loginMode.getCode());
++
++                // Re-uses the real persistence path: this is what sets the user's
++                // local password hash (with an auto-generated salt), roles and
++                // stored auth tokens -- same as a real server login would.
++                updateUserDetails(loginUserDTO.getUserId(), loginUserDTO.getPassword(), token, refreshToken);
++
++                ApplicationContext.setAuthTokenDTO(authTokenDTO);
++                if (SessionContext.isSessionContextAvailable())
++                    SessionContext.setAuthTokenDTO(authTokenDTO);
++
++                return authTokenDTO;
++            } catch (Exception exception) {
++                LOGGER.error("[MOCK BACKEND] Failed to fabricate auth token", exception);
++                throw new RegBaseCheckedException(RegistrationExceptionConstants.AUTH_TOKEN_COOKIE_NOT_FOUND.getErrorCode(),
++                        exception.getMessage(), exception);
++            }
++        }
++
+         try {
+             String timestamp = DateUtils.formatToISOString(LocalDateTime.now(ZoneOffset.UTC));
+             String header = String.format("{\"kid\" : \"%s\"}", CryptoUtil.computeFingerPrint(clientCryptoFacade.getClientSecurity().getSigningPublicPart(), null));
+@@ -268,6 +301,9 @@ public class AuthTokenUtilService {
+ 
+     public String sendOTP(String userId) throws ConnectionException {
+         LOGGER.info("Request to send OTP");
++        if (MockBackend.isEnabled()) {
++            return RegistrationConstants.OTP_GENERATION_SUCCESS_MESSAGE + "000000 (mock backend - any OTP is accepted)";
++        }
+         try {
+             String timestamp = DateUtils.formatToISOString(LocalDateTime.now(ZoneOffset.UTC));
+             String header = String.format("{\"kid\" : \"%s\"}", CryptoUtil.computeFingerPrint(clientCryptoFacade.getClientSecurity().getSigningPublicPart(), null));
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java
+new file mode 100644
+index 0000000..60bd0b7
+--- /dev/null
++++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java
+@@ -0,0 +1,235 @@
++package io.mosip.registration.util.restclient;
++
++import io.mosip.kernel.core.logger.spi.Logger;
++import io.mosip.registration.config.AppConfig;
++import io.mosip.registration.constants.RegistrationConstants;
++import org.springframework.stereotype.Component;
++
++import java.nio.charset.StandardCharsets;
++import java.time.Instant;
++import java.time.ZoneOffset;
++import java.time.format.DateTimeFormatter;
++import java.util.ArrayList;
++import java.util.Base64;
++import java.util.HashMap;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * ============================================================================
++ *  MOCK BACKEND -- FOR LOCAL DEVELOPMENT / DEMO USE ONLY.
++ * ============================================================================
++ *
++ * This class is the single place that fabricates "server" responses for the
++ * registration-client, so the desktop app can be exercised end-to-end with
++ * NO MOSIP backend running at all (no Keycloak, no sync server, no DB
++ * services).
++ *
++ * How it's wired in:
++ *   - ServiceDelegateUtil.isNetworkAvailable()/get()/post()/download() check
++ *     MockBackend.isEnabled() first. When enabled, they never touch
++ *     RestClientUtil (i.e. never make a real HTTP call), and instead return
++ *     whatever this class produces for the given serviceName.
++ *   - AuthTokenUtilService short-circuits the same way for login/token calls.
++ *
++ * This intentionally bypasses RestClientAuthAdvice and ResponseSignatureAdvice
++ * entirely, because both of those only wrap RestClientUtil.invokeURL(...),
++ * which this mock never calls.
++ *
++ * Enable with a JVM system property, e.g.:
++ *   -Dmosip.mock.backend=true
++ *
++ * DO NOT enable this against a real deployment or with real user data --
++ * it accepts ANY username/password on first run and fabricates "valid"
++ * auth tokens and sync data locally.
++ *
++ * Scope / honesty note: this gives you a GENERIC, minimally-plausible
++ * response for every call so the app doesn't crash with nulls, plus a
++ * few hand-filled special cases (master data sync, auth token, id schema)
++ * that are known to be required for the very first login to succeed.
++ * It is NOT a byte-accurate reimplementation of the real MOSIP sync
++ * contracts -- some screens/features that depend on richer master data
++ * (document types, biometric types, templates, etc.) will likely come up
++ * empty. Extend the per-service methods below as you hit specific gaps.
++ */
++public final class MockBackend {
++
++    private static final Logger LOGGER = AppConfig.getLogger(MockBackend.class);
++
++    private MockBackend() {
++    }
++
++    public static boolean isEnabled() {
++        return Boolean.parseBoolean(System.getProperty("mosip.mock.backend", "false"));
++    }
++
++    // ------------------------------------------------------------------
++    // Entry point used by ServiceDelegateUtil.get()/post()
++    // ------------------------------------------------------------------
++
++    /**
++     * Returns the mocked response BODY (i.e. what the real responseBody would
++     * have been) for a given serviceName, the way it's configured in
++     * mosip-application.properties / spring.properties (e.g. "master_sync",
++     * "getcert_sync", "tpm_public_key", "user_details", ...).
++     */
++    public static Object mockResponseBody(String serviceName) {
++        LOGGER.info("[MOCK BACKEND] Faking response for service: {}", serviceName);
++
++        switch (serviceName) {
++            case RegistrationConstants.MASTER_VALIDATOR_SERVICE_NAME: // "master_sync"
++                return masterSyncResponse();
++
++            case RegistrationConstants.ID_SCHEMA_SYNC_SERVICE: // "idschema_key"
++                return idSchemaResponse();
++
++            case RegistrationConstants.TPM_PUBLIC_KEY_SYNC_SERVICE_NAME: // "tpm_public_key"
++                return successOnlyResponse();
++
++            case RegistrationConstants.GET_GLOBAL_CONFIG: // "get_registration_center_config"
++                return globalConfigResponse();
++
++            case RegistrationConstants.USER_DETAILS_SERVICE_NAME: // "user_details"
++                return emptyResponse(); // no "userDetails" key -> caller skips decrypt safely
++
++            case RegistrationConstants.GET_CERTIFICATE: // "getcert_sync"
++                return emptyResponse(); // no "certificate" key -> caller skips safely
++
++            default:
++                // Generic, safe default for every other call (packet upload/sync/status,
++                // pre-registration, onboarding, center/machine remap, etc.): a
++                // structurally valid, empty "success" envelope so callers that just
++                // check "response != null" don't NPE. Functionally these are no-ops.
++                return genericResponse();
++        }
++    }
++
++    // ------------------------------------------------------------------
++    // Per-service mock payloads
++    // ------------------------------------------------------------------
++
++    private static Map<String, Object> genericResponse() {
++        Map<String, Object> response = new LinkedHashMap<>();
++        response.put("status", "SUCCESS");
++        response.put("message", "mock-backend: no real server call was made");
++        return response;
++    }
++
++    private static Map<String, Object> successOnlyResponse() {
++        Map<String, Object> response = new LinkedHashMap<>();
++        response.put("status", "success");
++        return response;
++    }
++
++    private static Map<String, Object> emptyResponse() {
++        // An empty-but-non-null map: enough for "if (response != null)" checks to
++        // pass, while deliberately omitting keys (e.g. "certificate", "userDetails")
++        // that would otherwise trigger a decrypt/parse of data we didn't supply.
++        return new LinkedHashMap<>();
++    }
++
++    private static Map<String, Object> globalConfigResponse() {
++        Map<String, Object> configDetail = new LinkedHashMap<>();
++        // Deliberately empty: GlobalParamServiceImpl only acts on
++        // configDetail.globalConfiguration / .localConfiguration when present.
++        Map<String, Object> response = new LinkedHashMap<>();
++        response.put("configDetail", configDetail);
++        return response;
++    }
++
++    /**
++     * master_sync: the big "clientsettings" payload. We return a structurally
++     * valid envelope (so date parsing / null checks don't blow up) with an
++     * EMPTY dataToSync list. ClientSettingSyncHelper's per-entity handlers all
++     * no-op cleanly when their entity isn't present in the list, so this is the
++     * "keep it basic" choice -- no local master data (centers, roles, document
++     * types, ...) gets created. If you need specific master data available in
++     * the UI, add entries to the "dataToSync" list here, matching the JPA
++     * entity's field names (see io.mosip.registration.entity.*) -- the sync
++     * helper deserializes each entity's JSON straight into those classes.
++     */
++    private static Map<String, Object> masterSyncResponse() {
++        Map<String, Object> response = new LinkedHashMap<>();
++        response.put("lastSyncTime", isoTimestampNow());
++        response.put("dataToSync", new ArrayList<Map<String, Object>>());
++        return response;
++    }
++
++    /**
++     * idschema_key: required as part of master_sync (ClientSettingSyncHelper
++     * calls this too). A minimal-but-structurally-valid ID schema so the schema
++     * parser doesn't choke. The registration form rendered from this will be
++     * very sparse -- swap in a real ID schema JSON (MOSIP ships sample ones)
++     * if you need the full demographic capture form.
++     */
++    private static Map<String, Object> idSchemaResponse() {
++        String schemaJson = "{"
++                + "\"$schema\":\"http://json-schema.org/draft-07/schema#\","
++                + "\"description\":\"Mock minimal identity\","
++                + "\"title\":\"Mock identity\","
++                + "\"properties\":{"
++                + "  \"identity\":{"
++                + "    \"type\":\"object\","
++                + "    \"properties\":{"
++                + "      \"fullName\":{\"fieldCategory\":\"pvt\",\"type\":\"simpleType\",\"fieldType\":\"default\",\"bioAttributes\":[]},"
++                + "      \"dateOfBirth\":{\"fieldCategory\":\"pvt\",\"type\":\"string\",\"fieldType\":\"default\",\"bioAttributes\":[]},"
++                + "      \"gender\":{\"fieldCategory\":\"pvt\",\"type\":\"simpleType\",\"fieldType\":\"default\",\"bioAttributes\":[]}"
++                + "    }"
++                + "  }"
++                + "}"
++                + "}";
++
++        Map<String, Object> response = new LinkedHashMap<>();
++        response.put("id", "mock-schema");
++        response.put("idVersion", 0.1);
++        response.put("schemaJson", schemaJson);
++        response.put("effectiveFrom", isoLocalDateTimeNow());
++        response.put("settings", new ArrayList<Map<String, Object>>());
++        return response;
++    }
++
++    // ------------------------------------------------------------------
++    // Auth token / JWT helpers (used by AuthTokenUtilService)
++    // ------------------------------------------------------------------
++
++    /**
++     * Builds a structurally-valid JWT string carrying userId/role claims, with
++     * a 12-hour expiry. The signature segment is NOT a real signature -- this
++     * codebase only ever calls JWT.decode(token) on it (to read claims), never
++     * a verifier, so an unsigned/garbage-signed token works everywhere it's used.
++     */
++    public static String buildMockJwt(String userId, String role) {
++        long now = Instant.now().getEpochSecond();
++        long exp = now + (12 * 60 * 60);
++        String header = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
++        String payload = String.format(
++                "{\"sub\":\"%s\",\"name\":\"%s\",\"iat\":%d,\"exp\":%d,"
++                        + "\"realm_access\":{\"roles\":[\"%s\"]}}",
++                esc(userId), esc(userId), now, exp, esc(role));
++        return b64(header) + "." + b64(payload) + "." + b64("mock-signature-not-verified");
++    }
++
++    private static String esc(String s) {
++        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
++    }
++
++    private static String b64(String s) {
++        return Base64.getUrlEncoder().withoutPadding().encodeToString(s.getBytes(StandardCharsets.UTF_8));
++    }
++
++    // ------------------------------------------------------------------
++    // Misc
++    // ------------------------------------------------------------------
++
++    private static String isoTimestampNow() {
++        // Matches BaseService.TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
++        return DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
++                .withZone(ZoneOffset.UTC)
++                .format(Instant.now());
++    }
++
++    private static String isoLocalDateTimeNow() {
++        return DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneOffset.UTC).format(Instant.now());
++    }
++}
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
+index d695a8f..06c680a 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
+@@ -76,6 +76,9 @@ public class ServiceDelegateUtil {
+ 	 */
+ 	@Timed
+ 	public boolean isNetworkAvailable() {
++		if (MockBackend.isEnabled()) {
++			return true;
++		}
+ 		try {
+ 			String healthCheckUrl = ApplicationContext.getStringValueFromApplicationMap(RegistrationConstants.HEALTH_CHECK_URL);
+ 			Assert.notNull(healthCheckUrl, "Property mosip.reg.healthcheck.url missing");
+@@ -111,6 +114,10 @@ public class ServiceDelegateUtil {
+ 
+ 		LOGGER.debug("Get method has been called - {}", serviceName);
+ 
++		if (MockBackend.isEnabled()) {
++			return MockBackend.mockResponseBody(serviceName);
++		}
++
+ 		Map<String, Object> responseMap;
+ 		Object responseBody = null;
+ 
+@@ -166,6 +173,12 @@ public class ServiceDelegateUtil {
+ 					  String authHeader, String triggerPoint, @NonNull Path path, boolean isEncrypted)
+ 			throws RegBaseCheckedException, ConnectionException {
+ 		LOGGER.debug("Get method has been called - {}", url);
++
++		if (MockBackend.isEnabled()) {
++			LOGGER.info("[MOCK BACKEND] Skipping file download for {}", url);
++			return;
++		}
++
+ 		RequestHTTPDTO requestHTTPDTO = new RequestHTTPDTO();
+ 		try {
+ 			requestHTTPDTO.setHttpMethod(HttpMethod.GET);
+@@ -216,6 +229,10 @@ public class ServiceDelegateUtil {
+ 	public Object post(String serviceName, Object object, String triggerPoint) throws RegBaseCheckedException, ConnectionException {
+ 		LOGGER.debug("Post method called - {} ", serviceName);
+ 
++		if (MockBackend.isEnabled()) {
++			return MockBackend.mockResponseBody(serviceName);
++		}
++
+ 		RequestHTTPDTO requestDto;
+ 		Object responseBody = null;
+ 		Map<String, Object> responseMap = null;
