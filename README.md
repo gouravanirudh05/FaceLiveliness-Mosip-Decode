@@ -31,9 +31,8 @@ uv run --active python browser.py
 To get the MOSIP working
 ```
 # root of repo.
-mvn install:install-file -Dfile=extras/mock-sdk
--1.3.1.jar -DgroupId=io.mosip.mock.sdk -DartifactId=mock-sdk -Dversion=1.3.1 -Dpackaging=jar 
 cd mosip/registration-client/registration
+# git apply --ignore-whitespace ../patches/mock-backend.patch #apply the mock backend patch
 mvn clean install -Dgpg.skip=true -DskipTests=true -Dmaven.javadoc.skip=true
 
 # !!! IF USING LINUX (Download and unzip in extras....)
@@ -43,5 +42,7 @@ cp mosip/registration-client/registration/target/registration-client-1.0.0-SNAPS
 
 cd mosip/registration-client/registration/target/lib
 # Now run this command to start the registration client
+wget https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-1.2.0.2.jar #download the mock sdk
 java   --module-path ~/mosip/FaceLiveliness-Mosip-Decode/extras/javafx-sdk-11.0.2/lib/   --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics   --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED   -Dmosip.mock.backend=true -Dprism.verbose=true  -cp "*"   io.mosip.registration.controller.Initialization
+# use credentials demo-operator, demo-operator
 ```

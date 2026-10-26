@@ -1,5 +1,217 @@
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java
+index 4104f55447..ca16367466 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.config.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import java.io.IOException;
+ import java.sql.Timestamp;
+ import java.util.Arrays;
+@@ -102,6 +103,11 @@ public class GlobalParamServiceImpl extends BaseService implements GlobalParamSe
+ 		LOGGER.info("config data sync is started");
+ 		ResponseDTO responseDTO = new ResponseDTO();
+ 
++		// Mock mode: config comes from MockDataSeeder; a real sync would mark it all as deleted
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(responseDTO, RegistrationConstants.POLICY_SYNC_SUCCESS_MESSAGE, null);
++		}
++
+ 		if (isJob && !serviceDelegateUtil.isNetworkAvailable()) {
+ 			LOGGER.info("NO Internet Connection So calling off global param sync");
+ 			return setErrorResponse(responseDTO, RegistrationConstants.NO_INTERNET, null);
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java
+index 630a9830a7..0c05f1061f 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java
+@@ -1,5 +1,7 @@
+ package io.mosip.registration.service.login.impl;
+ 
++import io.mosip.registration.util.restclient.MockDataSeeder;
++import io.mosip.registration.util.restclient.MockBackend;
+ import static io.mosip.registration.constants.LoggerConstants.LOG_REG_LOGIN_SERVICE;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_ID;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_NAME;
+@@ -129,6 +131,9 @@ public class LoginServiceImpl extends BaseService implements LoginService {
+ 	@Autowired
+ 	private CertificateSyncService certificateSyncService;
+ 
++	@Autowired
++	private MockDataSeeder mockDataSeeder;
++
+ 	/*
+ 	 * (non-Javadoc)
+ 	 * 
+@@ -182,6 +187,14 @@ public class LoginServiceImpl extends BaseService implements LoginService {
+ 		try {
+ 			getUserDetailValidation(userId);
+ 
++			if (MockBackend.isEnabled()) {
++				// create users only during the initial setup; afterwards just ensure base data exists
++				if (isInitialSync())
++					mockDataSeeder.ensureUser(userId);
++				else
++					mockDataSeeder.ensureSeeded();
++			}
++
+ 			auditFactory.audit(AuditEvent.FETCH_USR_DET, Components.USER_DETAIL, RegistrationConstants.APPLICATION_NAME,
+ 					AuditReferenceIdTypes.APPLICATION_ID.getReferenceTypeId());
+ 
+@@ -309,6 +322,15 @@ public class LoginServiceImpl extends BaseService implements LoginService {
+ 	@Timed
+ 	@Override
+ 	public List<String> initialSync(String triggerPoint) {
++		if (MockBackend.isEnabled()) {
++			LOGGER.info("Mock mode: seeding local DB instead of syncing");
++			mockDataSeeder.ensureSeeded();
++			List<String> mockResults = new LinkedList<>();
++			if (mockDataSeeder.hasInsertedNewParams())
++				mockResults.add(RegistrationConstants.RESTART);
++			mockResults.add(RegistrationConstants.SUCCESS);
++			return mockResults;
++		}
+ 		long start = System.currentTimeMillis();
+ 		LOGGER.info("REGISTRATION  - LOGINSERVICE", APPLICATION_NAME, APPLICATION_ID, "Started Initial sync");
+ 		List<String> results = new LinkedList<>();
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java
+index c3fe4b081e..35ab668efb 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.operator.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import static io.mosip.registration.constants.LoggerConstants.LOG_REG_MASTER_SYNC;
+ import static io.mosip.registration.constants.LoggerConstants.LOG_REG_USER_DETAIL;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_ID;
+@@ -72,6 +73,9 @@ public class UserDetailServiceImpl extends BaseService implements UserDetailServ
+ 	 */
+ 	@Timed
+ 	public synchronized ResponseDTO save(String triggerPoint) throws RegBaseCheckedException {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+ 		ResponseDTO responseDTO = new ResponseDTO();
+ 		LOGGER.info("Entering into user detail save method...");
+ 		try {
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java
+index 145bab82f5..0e45d74c4b 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.sync.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import java.time.LocalDateTime;
+ import java.time.ZoneOffset;
+ import java.util.ArrayList;
+@@ -77,6 +78,9 @@ public class CertificateSyncServiceImpl extends BaseService implements Certifica
+     @Timed
+     @Override
+     public ResponseDTO getCACertificates(String triggerPoint) {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+         ResponseDTO responseDTO = new ResponseDTO();
+         Map<String, String> requestParamMap = new LinkedHashMap<>();
+         SyncControl syncControl = masterSyncDao.syncJobDetails(RegistrationConstants.OPT_TO_REG_CCS_J00017);
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java
+index cd3799ee53..4fe1a84609 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.sync.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import static io.mosip.registration.constants.LoggerConstants.LOG_REG_MASTER_SYNC;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_ID;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_NAME;
+@@ -113,6 +114,9 @@ public class MasterSyncServiceImpl extends BaseService implements MasterSyncServ
+ 	@Timed
+ 	@Override
+ 	public ResponseDTO getMasterSync(String masterSyncDtls, String triggerPoint) throws RegBaseCheckedException {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+ 		LOGGER.info("Initiating the Master Sync");
+ 
+ 		if (masterSyncFieldsValidate(masterSyncDtls, triggerPoint)) {
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java
+index 891d677c55..33b73ca07d 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.sync.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import java.util.*;
+ 
+ import io.micrometer.core.annotation.Timed;
+@@ -82,6 +83,9 @@ public class PolicySyncServiceImpl extends BaseService implements PolicySyncServ
+ 	@Timed
+ 	@Override
+ 	public ResponseDTO fetchPolicy() throws RegBaseCheckedException {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+ 		LOGGER.debug("fetchPolicy invoked");
+ 
+ 		ResponseDTO responseDTO = new ResponseDTO();
+@@ -180,6 +184,9 @@ public class PolicySyncServiceImpl extends BaseService implements PolicySyncServ
+ 	 */
+ 	@Override
+ 	public ResponseDTO checkKeyValidation() {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+ 		LOGGER.info("Key validation started");
+ 		ResponseDTO responseDTO = new ResponseDTO();
+ 		try {
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java
+index 0a2d3bf311..1be6b2c4f3 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.sync.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import static io.mosip.registration.constants.LoggerConstants.REGISTRATION_PUBLIC_KEY_SYNC;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_ID;
+ import static io.mosip.registration.constants.RegistrationConstants.APPLICATION_NAME;
+@@ -70,6 +71,9 @@ public class PublicKeySyncImpl extends BaseService implements PublicKeySync {
+ 	@Timed
+ 	@Override
+ 	public ResponseDTO getPublicKey(String triggerPoint) throws RegBaseCheckedException {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+ 		LOGGER.info("Entering into get public key method.....");
+ 
+ 		//Precondition check, proceed only if met, otherwise throws exception
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java
+index 25346f04bd..dc6f417fa4 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java
+@@ -1,5 +1,6 @@
+ package io.mosip.registration.service.sync.impl;
+ 
++import io.mosip.registration.util.restclient.MockBackend;
+ import java.net.InetAddress;
+ import java.net.SocketTimeoutException;
+ import java.net.UnknownHostException;
+@@ -61,6 +62,9 @@ public class TPMPublicKeySyncServiceImpl  extends BaseService implements TPMPubl
+ 	@Override
+ 	@SuppressWarnings("unchecked")
+ 	public ResponseDTO syncTPMPublicKey() throws RegBaseCheckedException {
++		if (MockBackend.isEnabled()) {
++			return setSuccessResponse(new ResponseDTO(), RegistrationConstants.SUCCESS, null);
++		}
+ 
+ 		LOGGER.info("Verify TPM Public Key mapping in server started");
+ 
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
-index e84fda6..9b9ef87 100644
+index e84fda6ce6..6dd3aedd63 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
 @@ -102,6 +102,9 @@ public class AuthTokenUtilService {
@@ -12,26 +224,22 @@ index e84fda6..9b9ef87 100644
          UserToken userToken = userTokenRepository.findTopByTokenExpiryGreaterThanAndUserDetailIsActiveTrueOrderByTokenExpiryDesc(System.currentTimeMillis()/1000);
          if(userToken != null) {
              return true;
-@@ -204,6 +207,36 @@ public class AuthTokenUtilService {
+@@ -204,6 +207,32 @@ public class AuthTokenUtilService {
  
      public AuthTokenDTO getAuthTokenAndRefreshToken(LoginMode loginMode, LoginUserDTO loginUserDTO) throws RegBaseCheckedException {
          LOGGER.info("Fetching Auth Token and refresh token based on Login Mode >>> {}",loginMode);
 +
 +        if (MockBackend.isEnabled()) {
 +            try {
-+                // Mock mode: fabricate a token locally, no server round-trip, no
-+                // crypto/signature involved. Any userId/password typed is accepted.
-+                String role = "REGISTRATION_SUPERVISOR";
-+                String token = MockBackend.buildMockJwt(loginUserDTO.getUserId(), role);
-+                String refreshToken = MockBackend.buildMockJwt(loginUserDTO.getUserId(), role);
++                // Mock mode: fabricate JWTs locally. Any user id / password is accepted; the
++                // password is hashed and stored locally exactly like a real login would.
++                String token = MockBackend.buildMockJwt(loginUserDTO.getUserId(), "REGISTRATION_OFFICER", "REGISTRATION_SUPERVISOR");
++                String refreshToken = MockBackend.buildMockJwt(loginUserDTO.getUserId(), "REGISTRATION_OFFICER", "REGISTRATION_SUPERVISOR");
 +
 +                AuthTokenDTO authTokenDTO = new AuthTokenDTO();
 +                authTokenDTO.setCookie(String.format("Authorization=%s", token));
 +                authTokenDTO.setLoginMode(loginMode.getCode());
 +
-+                // Re-uses the real persistence path: this is what sets the user's
-+                // local password hash (with an auto-generated salt), roles and
-+                // stored auth tokens -- same as a real server login would.
 +                updateUserDetails(loginUserDTO.getUserId(), loginUserDTO.getPassword(), token, refreshToken);
 +
 +                ApplicationContext.setAuthTokenDTO(authTokenDTO);
@@ -49,7 +257,7 @@ index e84fda6..9b9ef87 100644
          try {
              String timestamp = DateUtils.formatToISOString(LocalDateTime.now(ZoneOffset.UTC));
              String header = String.format("{\"kid\" : \"%s\"}", CryptoUtil.computeFingerPrint(clientCryptoFacade.getClientSecurity().getSigningPublicPart(), null));
-@@ -268,6 +301,9 @@ public class AuthTokenUtilService {
+@@ -268,6 +297,9 @@ public class AuthTokenUtilService {
  
      public String sendOTP(String userId) throws ConnectionException {
          LOGGER.info("Request to send OTP");
@@ -61,247 +269,508 @@ index e84fda6..9b9ef87 100644
              String header = String.format("{\"kid\" : \"%s\"}", CryptoUtil.computeFingerPrint(clientCryptoFacade.getClientSecurity().getSigningPublicPart(), null));
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java
 new file mode 100644
-index 0000000..60bd0b7
+index 0000000000..317db958c8
 --- /dev/null
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,143 @@
 +package io.mosip.registration.util.restclient;
 +
-+import io.mosip.kernel.core.logger.spi.Logger;
-+import io.mosip.registration.config.AppConfig;
-+import io.mosip.registration.constants.RegistrationConstants;
-+import org.springframework.stereotype.Component;
-+
++import java.io.IOException;
++import java.io.InputStream;
 +import java.nio.charset.StandardCharsets;
 +import java.time.Instant;
 +import java.time.ZoneOffset;
 +import java.time.format.DateTimeFormatter;
 +import java.util.ArrayList;
 +import java.util.Base64;
-+import java.util.HashMap;
 +import java.util.LinkedHashMap;
-+import java.util.List;
 +import java.util.Map;
++import java.util.Properties;
++
++import io.mosip.kernel.core.logger.spi.Logger;
++import io.mosip.registration.config.AppConfig;
++import io.mosip.registration.constants.RegistrationConstants;
 +
 +/**
-+ * ============================================================================
-+ *  MOCK BACKEND -- FOR LOCAL DEVELOPMENT / DEMO USE ONLY.
-+ * ============================================================================
++ * MOCK BACKEND -- LOCAL DEVELOPMENT / DEMO USE ONLY.
 + *
-+ * This class is the single place that fabricates "server" responses for the
-+ * registration-client, so the desktop app can be exercised end-to-end with
-+ * NO MOSIP backend running at all (no Keycloak, no sync server, no DB
-+ * services).
++ * Enabled with the JVM flag {@code -Dmosip.mock.backend=true}. When enabled:
++ * <ul>
++ * <li>{@link ServiceDelegateUtil} never makes an HTTP call; it returns the
++ * envelopes built here ({@code {"response": {...}, "errors": null}}, the same
++ * shape the real MOSIP services return).</li>
++ * <li>{@link AuthTokenUtilService} fabricates JWTs locally.</li>
++ * <li>The sync services (public key, TPM key, global params, master data, user
++ * details, CA certs, policy) short-circuit to "success" so they can never
++ * overwrite the locally seeded data.</li>
++ * <li>{@link MockDataSeeder} seeds the local Derby DB (machine, registration
++ * center, user, roles, login methods, screen permissions, global params).</li>
++ * </ul>
 + *
-+ * How it's wired in:
-+ *   - ServiceDelegateUtil.isNetworkAvailable()/get()/post()/download() check
-+ *     MockBackend.isEnabled() first. When enabled, they never touch
-+ *     RestClientUtil (i.e. never make a real HTTP call), and instead return
-+ *     whatever this class produces for the given serviceName.
-+ *   - AuthTokenUtilService short-circuits the same way for login/token calls.
-+ *
-+ * This intentionally bypasses RestClientAuthAdvice and ResponseSignatureAdvice
-+ * entirely, because both of those only wrap RestClientUtil.invokeURL(...),
-+ * which this mock never calls.
-+ *
-+ * Enable with a JVM system property, e.g.:
-+ *   -Dmosip.mock.backend=true
-+ *
-+ * DO NOT enable this against a real deployment or with real user data --
-+ * it accepts ANY username/password on first run and fabricates "valid"
-+ * auth tokens and sync data locally.
-+ *
-+ * Scope / honesty note: this gives you a GENERIC, minimally-plausible
-+ * response for every call so the app doesn't crash with nulls, plus a
-+ * few hand-filled special cases (master data sync, auth token, id schema)
-+ * that are known to be required for the very first login to succeed.
-+ * It is NOT a byte-accurate reimplementation of the real MOSIP sync
-+ * contracts -- some screens/features that depend on richer master data
-+ * (document types, biometric types, templates, etc.) will likely come up
-+ * empty. Extend the per-service methods below as you hit specific gaps.
++ * Never enable this against a real deployment: it accepts any credentials.
 + */
 +public final class MockBackend {
 +
-+    private static final Logger LOGGER = AppConfig.getLogger(MockBackend.class);
++	private static final Logger LOGGER = AppConfig.getLogger(MockBackend.class);
 +
-+    private MockBackend() {
-+    }
++	private static final String GLOBAL_CONFIG_RESOURCE = "/mock-global-config.properties";
 +
-+    public static boolean isEnabled() {
-+        return Boolean.parseBoolean(System.getProperty("mosip.mock.backend", "false"));
-+    }
++	private MockBackend() {
++	}
 +
-+    // ------------------------------------------------------------------
-+    // Entry point used by ServiceDelegateUtil.get()/post()
-+    // ------------------------------------------------------------------
++	public static boolean isEnabled() {
++		return Boolean.parseBoolean(System.getProperty("mosip.mock.backend", "false"));
++	}
 +
-+    /**
-+     * Returns the mocked response BODY (i.e. what the real responseBody would
-+     * have been) for a given serviceName, the way it's configured in
-+     * mosip-application.properties / spring.properties (e.g. "master_sync",
-+     * "getcert_sync", "tpm_public_key", "user_details", ...).
-+     */
-+    public static Object mockResponseBody(String serviceName) {
-+        LOGGER.info("[MOCK BACKEND] Faking response for service: {}", serviceName);
++	/**
++	 * Returns what {@code responseMap.get("responseBody")} would have been for the
++	 * given service, i.e. the full MOSIP envelope.
++	 */
++	public static Object mockResponseBody(String serviceName) {
++		LOGGER.info("[MOCK BACKEND] Faking response for service: {}", serviceName);
 +
-+        switch (serviceName) {
-+            case RegistrationConstants.MASTER_VALIDATOR_SERVICE_NAME: // "master_sync"
-+                return masterSyncResponse();
++		Map<String, Object> body;
++		switch (serviceName) {
++		case RegistrationConstants.MASTER_VALIDATOR_SERVICE_NAME:
++			body = new LinkedHashMap<>();
++			body.put("lastSyncTime", isoTimestampNow());
++			body.put("dataToSync", new ArrayList<Map<String, Object>>());
++			break;
++		case RegistrationConstants.GET_GLOBAL_CONFIG:
++			body = new LinkedHashMap<>();
++			body.put("configDetail", new LinkedHashMap<String, Object>());
++			break;
++		default:
++			body = new LinkedHashMap<>();
++			body.put("status", "SUCCESS");
++			body.put("message", "mock-backend: no real server call was made");
++		}
++		return envelope(body);
++	}
 +
-+            case RegistrationConstants.ID_SCHEMA_SYNC_SERVICE: // "idschema_key"
-+                return idSchemaResponse();
++	private static Map<String, Object> envelope(Object response) {
++		Map<String, Object> envelope = new LinkedHashMap<>();
++		envelope.put("id", null);
++		envelope.put("version", "1.0");
++		envelope.put("responsetime", isoTimestampNow());
++		envelope.put("metadata", null);
++		envelope.put(RegistrationConstants.RESPONSE, response);
++		envelope.put(RegistrationConstants.ERRORS, null);
++		return envelope;
++	}
 +
-+            case RegistrationConstants.TPM_PUBLIC_KEY_SYNC_SERVICE_NAME: // "tpm_public_key"
-+                return successOnlyResponse();
++	/**
++	 * Default client configuration (what the config server would normally push).
++	 * Loaded from {@code mock-global-config.properties} on the classpath.
++	 */
++	public static Map<String, String> defaultGlobalConfig() {
++		Map<String, String> config = new LinkedHashMap<>();
++		try (InputStream in = MockBackend.class.getResourceAsStream(GLOBAL_CONFIG_RESOURCE)) {
++			if (in == null) {
++				LOGGER.error("[MOCK BACKEND] {} not found on classpath", GLOBAL_CONFIG_RESOURCE);
++				return config;
++			}
++			Properties properties = new Properties();
++			properties.load(in);
++			for (String key : properties.stringPropertyNames()) {
++				config.put(key, properties.getProperty(key).trim());
++			}
++		} catch (IOException e) {
++			LOGGER.error("[MOCK BACKEND] Failed to load " + GLOBAL_CONFIG_RESOURCE, e);
++		}
++		return config;
++	}
 +
-+            case RegistrationConstants.GET_GLOBAL_CONFIG: // "get_registration_center_config"
-+                return globalConfigResponse();
++	/**
++	 * Builds a structurally valid, unsigned JWT (12h expiry) carrying the roles as
++	 * {@code realm_access.roles}. The client only ever calls {@code JWT.decode}
++	 * on tokens, never a verifier, so no real signature is needed.
++	 */
++	public static String buildMockJwt(String userId, String... roles) {
++		long now = Instant.now().getEpochSecond();
++		long exp = now + (12 * 60 * 60);
++		StringBuilder roleJson = new StringBuilder();
++		for (String role : roles) {
++			if (roleJson.length() > 0)
++				roleJson.append(',');
++			roleJson.append('"').append(esc(role)).append('"');
++		}
++		String header = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
++		String payload = String.format(
++				"{\"sub\":\"%s\",\"name\":\"%s\",\"preferred_username\":\"%s\",\"iat\":%d,\"exp\":%d,"
++						+ "\"realm_access\":{\"roles\":[%s]}}",
++				esc(userId), esc(userId), esc(userId), now, exp, roleJson);
++		return b64(header) + "." + b64(payload) + "." + b64("mock-signature-not-verified");
++	}
 +
-+            case RegistrationConstants.USER_DETAILS_SERVICE_NAME: // "user_details"
-+                return emptyResponse(); // no "userDetails" key -> caller skips decrypt safely
++	private static String esc(String s) {
++		return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
++	}
 +
-+            case RegistrationConstants.GET_CERTIFICATE: // "getcert_sync"
-+                return emptyResponse(); // no "certificate" key -> caller skips safely
++	private static String b64(String s) {
++		return Base64.getUrlEncoder().withoutPadding().encodeToString(s.getBytes(StandardCharsets.UTF_8));
++	}
 +
-+            default:
-+                // Generic, safe default for every other call (packet upload/sync/status,
-+                // pre-registration, onboarding, center/machine remap, etc.): a
-+                // structurally valid, empty "success" envelope so callers that just
-+                // check "response != null" don't NPE. Functionally these are no-ops.
-+                return genericResponse();
-+        }
-+    }
++	private static String isoTimestampNow() {
++		return DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
++				.format(Instant.now());
++	}
++}
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockDataSeeder.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockDataSeeder.java
+new file mode 100644
+index 0000000000..cf6e94b3a8
+--- /dev/null
++++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockDataSeeder.java
+@@ -0,0 +1,347 @@
++package io.mosip.registration.util.restclient;
 +
-+    // ------------------------------------------------------------------
-+    // Per-service mock payloads
-+    // ------------------------------------------------------------------
++import java.sql.Time;
++import java.sql.Timestamp;
++import java.time.LocalDateTime;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
 +
-+    private static Map<String, Object> genericResponse() {
-+        Map<String, Object> response = new LinkedHashMap<>();
-+        response.put("status", "SUCCESS");
-+        response.put("message", "mock-backend: no real server call was made");
-+        return response;
-+    }
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.stereotype.Component;
 +
-+    private static Map<String, Object> successOnlyResponse() {
-+        Map<String, Object> response = new LinkedHashMap<>();
-+        response.put("status", "success");
-+        return response;
-+    }
++import io.mosip.kernel.clientcrypto.service.impl.ClientCryptoFacade;
++import io.mosip.kernel.core.logger.spi.Logger;
++import io.mosip.kernel.core.util.CryptoUtil;
++import io.mosip.kernel.core.util.DateUtils;
++import io.mosip.registration.config.AppConfig;
++import io.mosip.registration.constants.RegistrationConstants;
++import io.mosip.registration.context.ApplicationContext;
++import io.mosip.registration.dao.GlobalParamDAO;
++import io.mosip.registration.dao.UserDetailDAO;
++import io.mosip.registration.dto.UserDetailDto;
++import io.mosip.registration.entity.AppAuthenticationMethod;
++import io.mosip.registration.entity.GlobalParam;
++import io.mosip.registration.entity.MachineMaster;
++import io.mosip.registration.entity.RegistrationCenter;
++import io.mosip.registration.entity.ScreenAuthorization;
++import io.mosip.registration.entity.UserDetail;
++import io.mosip.registration.entity.UserMachineMapping;
++import io.mosip.registration.entity.id.AppAuthenticationMethodId;
++import io.mosip.registration.entity.id.GlobalParamId;
++import io.mosip.registration.entity.id.RegistartionCenterId;
++import io.mosip.registration.entity.id.ScreenAuthorizationId;
++import io.mosip.registration.entity.id.UserMachineMappingID;
++import io.mosip.registration.enums.Role;
++import io.mosip.registration.repositories.AppAuthenticationRepository;
++import io.mosip.registration.repositories.MachineMasterRepository;
++import io.mosip.registration.repositories.RegistrationCenterRepository;
++import io.mosip.registration.repositories.ScreenAuthorizationRepository;
++import io.mosip.registration.repositories.UserMachineMappingRepository;
++import io.mosip.registration.util.healthcheck.RegistrationSystemPropertiesChecker;
 +
-+    private static Map<String, Object> emptyResponse() {
-+        // An empty-but-non-null map: enough for "if (response != null)" checks to
-+        // pass, while deliberately omitting keys (e.g. "certificate", "userDetails")
-+        // that would otherwise trigger a decrypt/parse of data we didn't supply.
-+        return new LinkedHashMap<>();
-+    }
++/**
++ * Seeds the local Derby DB with the data a real server sync would normally
++ * deliver, so that login and the home screen work with no MOSIP backend.
++ * Active only when {@link MockBackend#isEnabled()}. Every step is idempotent
++ * (insert-if-absent), so it is safe to call repeatedly and across restarts.
++ *
++ * Seeded: machine_master, registration_center, global_param (client config),
++ * app_authentication_method (password login), screen_authorization, and, on
++ * request, a user with roles + user/machine mapping.
++ */
++@Component
++public class MockDataSeeder {
 +
-+    private static Map<String, Object> globalConfigResponse() {
-+        Map<String, Object> configDetail = new LinkedHashMap<>();
-+        // Deliberately empty: GlobalParamServiceImpl only acts on
-+        // configDetail.globalConfiguration / .localConfiguration when present.
-+        Map<String, Object> response = new LinkedHashMap<>();
-+        response.put("configDetail", configDetail);
-+        return response;
-+    }
++	private static final Logger LOGGER = AppConfig.getLogger(MockDataSeeder.class);
 +
-+    /**
-+     * master_sync: the big "clientsettings" payload. We return a structurally
-+     * valid envelope (so date parsing / null checks don't blow up) with an
-+     * EMPTY dataToSync list. ClientSettingSyncHelper's per-entity handlers all
-+     * no-op cleanly when their entity isn't present in the list, so this is the
-+     * "keep it basic" choice -- no local master data (centers, roles, document
-+     * types, ...) gets created. If you need specific master data available in
-+     * the UI, add entries to the "dataToSync" list here, matching the JPA
-+     * entity's field names (see io.mosip.registration.entity.*) -- the sync
-+     * helper deserializes each entity's JSON straight into those classes.
-+     */
-+    private static Map<String, Object> masterSyncResponse() {
-+        Map<String, Object> response = new LinkedHashMap<>();
-+        response.put("lastSyncTime", isoTimestampNow());
-+        response.put("dataToSync", new ArrayList<Map<String, Object>>());
-+        return response;
-+    }
++	public static final String MOCK_MACHINE_ID = "10001";
++	public static final String MOCK_CENTER_ID = "10001";
++	private static final String MOCK_MACHINE_SPEC_ID = "1001";
++	private static final String SEEDER = "MockSeeder";
++	private static final String APP_ID = "REGISTRATION";
++	private static final String PWD_METHOD = "PWD";
 +
-+    /**
-+     * idschema_key: required as part of master_sync (ClientSettingSyncHelper
-+     * calls this too). A minimal-but-structurally-valid ID schema so the schema
-+     * parser doesn't choke. The registration form rendered from this will be
-+     * very sparse -- swap in a real ID schema JSON (MOSIP ships sample ones)
-+     * if you need the full demographic capture form.
-+     */
-+    private static Map<String, Object> idSchemaResponse() {
-+        String schemaJson = "{"
-+                + "\"$schema\":\"http://json-schema.org/draft-07/schema#\","
-+                + "\"description\":\"Mock minimal identity\","
-+                + "\"title\":\"Mock identity\","
-+                + "\"properties\":{"
-+                + "  \"identity\":{"
-+                + "    \"type\":\"object\","
-+                + "    \"properties\":{"
-+                + "      \"fullName\":{\"fieldCategory\":\"pvt\",\"type\":\"simpleType\",\"fieldType\":\"default\",\"bioAttributes\":[]},"
-+                + "      \"dateOfBirth\":{\"fieldCategory\":\"pvt\",\"type\":\"string\",\"fieldType\":\"default\",\"bioAttributes\":[]},"
-+                + "      \"gender\":{\"fieldCategory\":\"pvt\",\"type\":\"simpleType\",\"fieldType\":\"default\",\"bioAttributes\":[]}"
-+                + "    }"
-+                + "  }"
-+                + "}"
-+                + "}";
++	private static final List<String> ROLES = Arrays.asList(Role.REGISTRATION_OFFICER.name(),
++			Role.REGISTRATION_SUPERVISOR.name());
 +
-+        Map<String, Object> response = new LinkedHashMap<>();
-+        response.put("id", "mock-schema");
-+        response.put("idVersion", 0.1);
-+        response.put("schemaJson", schemaJson);
-+        response.put("effectiveFrom", isoLocalDateTimeNow());
-+        response.put("settings", new ArrayList<Map<String, Object>>());
-+        return response;
-+    }
++	/** process ids from io.mosip.registration.constants.ProcessNames */
++	private static final List<String> AUTH_PROCESSES = Arrays.asList("login_auth", "packet_auth", "eod_auth",
++			"exception_auth", "onboard_auth");
 +
-+    // ------------------------------------------------------------------
-+    // Auth token / JWT helpers (used by AuthTokenUtilService)
-+    // ------------------------------------------------------------------
++	/** root ids of the screens checked via BaseController#validateScreenAuthorization */
++	private static final List<String> SCREENS = Arrays.asList("newRegistrationRoot", "uinUpdateRoot", "lostUINRoot",
++			"correctionRoot", "uploadPacketRoot", "syncServerClientRoot", "eodRoot", "onBoardRoot",
++			"deviceSettingsRoot", "reRegistrationRootPane");
 +
-+    /**
-+     * Builds a structurally-valid JWT string carrying userId/role claims, with
-+     * a 12-hour expiry. The signature segment is NOT a real signature -- this
-+     * codebase only ever calls JWT.decode(token) on it (to read claims), never
-+     * a verifier, so an unsigned/garbage-signed token works everywhere it's used.
-+     */
-+    public static String buildMockJwt(String userId, String role) {
-+        long now = Instant.now().getEpochSecond();
-+        long exp = now + (12 * 60 * 60);
-+        String header = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
-+        String payload = String.format(
-+                "{\"sub\":\"%s\",\"name\":\"%s\",\"iat\":%d,\"exp\":%d,"
-+                        + "\"realm_access\":{\"roles\":[\"%s\"]}}",
-+                esc(userId), esc(userId), now, exp, esc(role));
-+        return b64(header) + "." + b64(payload) + "." + b64("mock-signature-not-verified");
-+    }
++	@Autowired
++	private MachineMasterRepository machineMasterRepository;
++	@Autowired
++	private RegistrationCenterRepository registrationCenterRepository;
++	@Autowired
++	private UserMachineMappingRepository userMachineMappingRepository;
++	@Autowired
++	private AppAuthenticationRepository appAuthenticationRepository;
++	@Autowired
++	private ScreenAuthorizationRepository screenAuthorizationRepository;
++	@Autowired
++	private UserDetailDAO userDetailDAO;
++	@Autowired
++	private GlobalParamDAO globalParamDAO;
++	@Autowired
++	private ClientCryptoFacade clientCryptoFacade;
 +
-+    private static String esc(String s) {
-+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
-+    }
++	private boolean baseSeeded = false;
++	private boolean newParamsInserted = false;
 +
-+    private static String b64(String s) {
-+        return Base64.getUrlEncoder().withoutPadding().encodeToString(s.getBytes(StandardCharsets.UTF_8));
-+    }
++	/** True if this JVM session inserted client config that needs an app restart to fully apply. */
++	public synchronized boolean hasInsertedNewParams() {
++		return newParamsInserted;
++	}
 +
-+    // ------------------------------------------------------------------
-+    // Misc
-+    // ------------------------------------------------------------------
++	/** Seeds everything that is not user specific. Idempotent and cheap after the first call. */
++	public synchronized void ensureSeeded() {
++		if (!MockBackend.isEnabled() || baseSeeded)
++			return;
 +
-+    private static String isoTimestampNow() {
-+        // Matches BaseService.TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
-+        return DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-+                .withZone(ZoneOffset.UTC)
-+                .format(Instant.now());
-+    }
++		LOGGER.info("[MOCK SEED] Seeding base data into local DB");
++		String keyIndex = seedMachine();
++		seedCenter();
++		seedGlobalParams();
++		seedAuthMethods();
++		seedScreens();
 +
-+    private static String isoLocalDateTimeNow() {
-+        return DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneOffset.UTC).format(Instant.now());
-+    }
++		// Normally set at the end of the first sync step of the real initialSync()
++		ApplicationContext.map().put(RegistrationConstants.KEY_INDEX, keyIndex);
++
++		baseSeeded = true;
++		LOGGER.info("[MOCK SEED] Base data seeded (machine {}, center {})", MOCK_MACHINE_ID, MOCK_CENTER_ID);
++	}
++
++	/** Seeds base data and makes sure the given user exists, is mapped to this machine and has roles. */
++	public synchronized void ensureUser(String userId) {
++		if (!MockBackend.isEnabled() || userId == null || userId.trim().isEmpty())
++			return;
++		ensureSeeded();
++
++		UserDetail existing = userDetailDAO.getUserDetail(userId);
++		if (existing == null) {
++			UserDetailDto dto = new UserDetailDto();
++			dto.setUserId(userId);
++			dto.setIsActive(Boolean.TRUE);
++			dto.setIsDeleted(Boolean.FALSE);
++			dto.setRegCenterId(MOCK_CENTER_ID);
++			userDetailDAO.save(dto);
++			LOGGER.info("[MOCK SEED] Created user {}", userId);
++		} else if (!MOCK_CENTER_ID.equals(existing.getRegCenterId())) {
++			// user left over from an earlier attempt, pointing at some other center
++			existing.setRegCenterId(MOCK_CENTER_ID);
++			userDetailDAO.update(existing);
++			LOGGER.info("[MOCK SEED] Re-pointed user {} to center {}", userId, MOCK_CENTER_ID);
++		}
++
++		if (userDetailDAO.getUserRoleByUserId(userId).isEmpty()) {
++			userDetailDAO.updateUserRolesAndUsername(userId, userId, new ArrayList<>(ROLES));
++		}
++
++		if (userMachineMappingRepository.findByUserMachineMappingIdUsrIdIgnoreCase(userId) == null) {
++			UserMachineMappingID id = new UserMachineMappingID();
++			id.setUsrId(userId);
++			id.setCntrId(MOCK_CENTER_ID);
++			id.setMachineId(MOCK_MACHINE_ID);
++
++			UserMachineMapping mapping = new UserMachineMapping();
++			mapping.setUserMachineMappingId(id);
++			mapping.setLangCode(lang());
++			mapping.setIsDeleted(Boolean.FALSE);
++			stamp(mapping);
++			userMachineMappingRepository.save(mapping);
++			LOGGER.info("[MOCK SEED] Mapped user {} to machine {}", userId, MOCK_MACHINE_ID);
++		}
++	}
++
++	// ------------------------------------------------------------------
++
++	/** @return the machine key index (fingerprint of the client encryption public key) */
++	private String seedMachine() {
++		byte[] encryptionPublicKey = clientCryptoFacade.getClientSecurity().getEncryptionPublicPart();
++		String keyIndex = CryptoUtil.computeFingerPrint(encryptionPublicKey, null);
++
++		String machineName = RegistrationSystemPropertiesChecker.getMachineId();
++		MachineMaster machine = machineMasterRepository.findByNameIgnoreCase(machineName);
++
++		if (machine == null) {
++			machine = new MachineMaster();
++			machine.setId(MOCK_MACHINE_ID);
++			machine.setName(machineName);
++			machine.setSerialNum("MOCK-SERIAL");
++			machine.setIpAddress("127.0.0.1");
++			machine.setMacAddress("00:00:00:00:00:00");
++			machine.setMachineSpecId(MOCK_MACHINE_SPEC_ID);
++			machine.setValidityDateTime(LocalDateTime.now().plusYears(10));
++			machine.setPublicKey(CryptoUtil.encodeToURLSafeBase64(encryptionPublicKey));
++			machine.setKeyIndex(keyIndex);
++			machine.setRegCenterId(MOCK_CENTER_ID);
++			stamp(machine);
++			machineMasterRepository.save(machine);
++			LOGGER.info("[MOCK SEED] Created machine {} ({})", MOCK_MACHINE_ID, machineName);
++		} else {
++			// keys are regenerated whenever .mosipkeys is wiped; keep the row in step with them
++			boolean dirty = false;
++			if (!keyIndex.equals(machine.getKeyIndex())) {
++				machine.setKeyIndex(keyIndex);
++				machine.setPublicKey(CryptoUtil.encodeToURLSafeBase64(encryptionPublicKey));
++				dirty = true;
++			}
++			if (!MOCK_CENTER_ID.equals(machine.getRegCenterId())) {
++				machine.setRegCenterId(MOCK_CENTER_ID);
++				dirty = true;
++			}
++			if (!Boolean.TRUE.equals(machine.getIsActive())) {
++				machine.setIsActive(Boolean.TRUE);
++				dirty = true;
++			}
++			if (dirty) {
++				machineMasterRepository.save(machine);
++				LOGGER.info("[MOCK SEED] Refreshed machine {}", machine.getId());
++			}
++		}
++		return keyIndex;
++	}
++
++	private void seedCenter() {
++		Set<String> langs = new HashSet<>(Arrays.asList(RegistrationConstants.ENGLISH_LANG_CODE, lang()));
++		for (String lang : langs) {
++			RegistartionCenterId id = new RegistartionCenterId();
++			id.setId(MOCK_CENTER_ID);
++			id.setLangCode(lang);
++
++			RegistrationCenter center = registrationCenterRepository.findById(RegistrationCenter.class, id);
++			if (center == null) {
++				center = new RegistrationCenter();
++				center.setRegistartionCenterId(id);
++				center.setName("Mock Registration Center");
++				center.setCenterTypeCode("REG");
++				center.setAddressLine1("Mock Address");
++				center.setLatitude("12.9716");
++				center.setLongitude("77.5946");
++				center.setLocationCode("MOCK");
++				center.setContactPerson("Mock Operator");
++				center.setContactPhone("9999999999");
++				center.setNumberOfKiosks(1);
++				center.setWorkingHours("8");
++				center.setPerKioskProcessTime(Time.valueOf("00:15:00"));
++				center.setCenterStartTime(Time.valueOf("09:00:00"));
++				center.setCenterEndTime(Time.valueOf("17:00:00"));
++				center.setLunchStartTime(Time.valueOf("13:00:00"));
++				center.setLunchEndTime(Time.valueOf("14:00:00"));
++				center.setTimeZone("UTC");
++				center.setIsDeleted(Boolean.FALSE);
++				stamp(center);
++				registrationCenterRepository.save(center);
++				LOGGER.info("[MOCK SEED] Created registration center {} ({})", MOCK_CENTER_ID, lang);
++			}
++		}
++	}
++
++	/**
++	 * Inserts every default from mock-global-config.properties that is not yet in
++	 * reg.global_param and publishes it to the live ApplicationContext map. Existing
++	 * rows are never overwritten.
++	 */
++	private void seedGlobalParams() {
++		Set<String> existing = new HashSet<>();
++		for (GlobalParam param : globalParamDAO.getAllEntries()) {
++			existing.add(param.getGlobalParamId().getCode());
++		}
++
++		List<GlobalParam> toSave = new ArrayList<>();
++		for (Map.Entry<String, String> entry : MockBackend.defaultGlobalConfig().entrySet()) {
++			if (existing.contains(entry.getKey()))
++				continue;
++			// the client reads these with (Long)/(Integer) casts and relies on its built-in defaults
++			// when they are absent; a String value loaded back from the DB would fail at startup
++			if (entry.getKey().startsWith("mosip.registration.retry."))
++				continue;
++
++			GlobalParamId id = new GlobalParamId();
++			id.setCode(entry.getKey());
++			id.setLangCode(RegistrationConstants.ENGLISH_LANG_CODE);
++
++			GlobalParam param = new GlobalParam();
++			param.setGlobalParamId(id);
++			param.setName(entry.getKey());
++			param.setTyp(RegistrationConstants.CONFIGURATION);
++			param.setVal(entry.getValue());
++			stamp(param);
++			toSave.add(param);
++
++			ApplicationContext.setGlobalConfigValueOf(entry.getKey(), entry.getValue());
++		}
++
++		if (!toSave.isEmpty()) {
++			globalParamDAO.saveAll(toSave);
++			newParamsInserted = true;
++			LOGGER.info("[MOCK SEED] Inserted {} global params", toSave.size());
++		}
++	}
++
++	private void seedAuthMethods() {
++		for (String process : AUTH_PROCESSES) {
++			for (String role : ROLES) {
++				AppAuthenticationMethodId id = new AppAuthenticationMethodId();
++				id.setAppId(APP_ID);
++				id.setProcessId(process);
++				id.setRoleCode(role);
++				id.setAuthMethodCode(PWD_METHOD);
++
++				if (appAuthenticationRepository.findById(AppAuthenticationMethod.class, id) != null)
++					continue;
++
++				AppAuthenticationMethod method = new AppAuthenticationMethod();
++				method.setAppAuthenticationMethodId(id);
++				method.setMethodSequence(1);
++				method.setLangCode(RegistrationConstants.ENGLISH_LANG_CODE);
++				stamp(method);
++				appAuthenticationRepository.save(method);
++			}
++		}
++	}
++
++	private void seedScreens() {
++		for (String role : ROLES) {
++			for (String screen : SCREENS) {
++				ScreenAuthorizationId id = new ScreenAuthorizationId();
++				id.setScreenId(screen);
++				id.setRoleCode(role);
++
++				if (screenAuthorizationRepository.findById(ScreenAuthorization.class, id) != null)
++					continue;
++
++				ScreenAuthorization auth = new ScreenAuthorization();
++				auth.setScreenAuthorizationId(id);
++				auth.setLangCode(RegistrationConstants.ENGLISH_LANG_CODE);
++				auth.setIsPermitted(Boolean.TRUE);
++				auth.setIsDeleted(Boolean.FALSE);
++				stamp(auth);
++				screenAuthorizationRepository.save(auth);
++			}
++		}
++	}
++
++	// ------------------------------------------------------------------
++
++	private static String lang() {
++		String lang = ApplicationContext.applicationLanguage();
++		return lang == null ? RegistrationConstants.ENGLISH_LANG_CODE : lang;
++	}
++
++	private static void stamp(io.mosip.registration.entity.RegistrationCommonFields entity) {
++		entity.setIsActive(Boolean.TRUE);
++		entity.setCrBy(SEEDER);
++		entity.setCrDtime(Timestamp.valueOf(DateUtils.getUTCCurrentDateTime()));
++	}
 +}
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
-index d695a8f..06c680a 100644
+index d695a8fe90..06c680a9a3 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
 @@ -76,6 +76,9 @@ public class ServiceDelegateUtil {
@@ -349,3 +818,147 @@ index d695a8f..06c680a 100644
  		RequestHTTPDTO requestDto;
  		Object responseBody = null;
  		Map<String, Object> responseMap = null;
+diff --git a/registration/registration-services/src/main/resources/mock-global-config.properties b/registration/registration-services/src/main/resources/mock-global-config.properties
+new file mode 100644
+index 0000000000..ad70b8ad23
+--- /dev/null
++++ b/registration/registration-services/src/main/resources/mock-global-config.properties
+@@ -0,0 +1,126 @@
++# Default client configuration used ONLY when -Dmosip.mock.backend=true.
++# Derived from mosip-config (release-1.2.0) registration-default.properties:
++# entries containing ${...} placeholders and entries already seeded by initial.sql are omitted.
++# MockDataSeeder inserts any key listed here that is missing from reg.global_param.
++mosip.registration.num_of_fingerprint_retries=3
++mosip.registration.num_of_iris_retries=3
++mosip.registration.num_of_face_retries=3
++mosip.registration.masterSyncJob.frequency=190
++mosip.registration.preRegistrationDataSyncJob.frequency=190
++mosip.registration.packetSyncStatusJob.frequency=190
++mosip.registration.keyPolicySyncJob.frequency=190
++mosip.registration.registrationDeletionJob.frequency=190
++mosip.registration.synchConfigDataJob.frequency=190
++mosip.registration.deleteAuditLogsJob.frequency=190
++mosip.registration.regUserMappingSyncJob.frequency=190
++mosip.registration.preRegistrationPacketDeletionJob.frequency=190
++mosip.registration.registrationPacketSyncJob.frequency=190
++mosip.registration.packet.maximum.count.offline.frequency=70
++objectstore.adapter.name=PosixAdapter
++mosip.sign.refid=SIGNATUREKEY
++objectstore.crypto.name=OfflinePacketCryptoServiceImpl
++object.store.base.location=../packets
++mosip.registration.distance.from.machine.to.center=900000
++mosip.registration.geo.capture.frequency=n
++mosip.registration.document_enable_flag=y
++mosip.registration.reviewer_authentication_configuration=Y
++mosip.registration.username_pwd_length=50
++mosip.registration.finger_print_score=80
++mosip.registration.capture_time_out=10000
++mosip.registration.document_size=2000000
++mosip.registration.pre_reg_no_of_days_limit=7
++mosip.registration.document_scanner_dpi=75
++mosip.registration.document_scanner_brightness=10
++mosip.registration.document_scanner_contrast=10
++mosip.registration.document_scanner_doctype=PDF
++mosip.registration.uin_update_config_flag=Y
++mosip.registration.lost_uin_disable_flag=Y
++mosip.registration.reg_pak_max_cnt_apprv_limit=100
++mosip.registration.reg_pak_max_time_apprv_limit=50
++mosip.registration.supervisor_approval_config_flag=Y
++mosip.registration.audit_log_deletion_configured_days=10
++mosip.registration.reg_deletion_configured_days=1
++mosip.registration.pre_reg_deletion_configured_days=1
++mosip.registration.sync_transaction_no_of_days_limit=5
++mosip.registration.invalid_login_count=50
++mosip.registration.invalid_login_time=2
++mosip.registration.gps_device_enable_flag=N
++mosip.registration.gps_device_model=GPSBU343Connector
++mosip.registration.gps_port_timeout=1000
++mosip.registration.gps_serial_port_linux=/dev/ttyusb0
++mosip.registration.last_export_registration_config_time=100
++mosip.registration.audit_application_id=REG
++mosip.registration.audit_application_name=REGISTRATION
++mosip.registration.audit_default_host_ip=120.0.0.0
++mosip.registration.audit_default_host_name=localhost
++mosip.registration.registration_packet_store_location=..//PacketStore
++mosip.registration.max_age=150
++mosip.registration.sync_jobs_restart_freq=0 0 */11 ? * *
++mosip.registration.registration_pre_reg_packet_location=..//PreRegPacketStore
++mosip.registration.otp_channels=email
++mosip.registration.idle_time=900
++mosip.registration.refreshed_login_time=600
++mosip.registration.leftslap_fingerprint_threshold=40
++mosip.registration.rightslap_fingerprint_threshold=40
++mosip.registration.thumbs_fingerprint_threshold=40
++mosip.registration.iris_threshold=60
++mosip.registration.face_threshold=90
++mosip.registration.softwareUpdateCheck_configured_frequency=300
++mosip.registration.document_scanner_enabled=No
++mosip.registration.cbeff_format_org=Mosip
++mosip.registration.cbeff_algorithm_org=HMAC
++mosip.registration.cbeff_algorithm_type=SHA-256
++mosip.registration.disk_space_size=5
++mosip.registration.mds.deduplication.enable.flag=N
++mosip.fingerprint_authentication.quality_score=30
++mosip.registration.jobs.offline=DEL_J00013,RDJ_J00010,ADJ_J00012,PVS_J00015
++mosip.registration.jobs.unTagged=PDS_J00003
++mosip.registration.jobs.restart=RCS_J00005
++mosip.registration.jobs.scheduler.enable=Y
++mosip.registration.mdm.host=127.0.0.1
++mosip.registration.mdm.portRangeFrom=4501
++mosip.registration.mdm.portRangeTo=4600
++mosip.biometric.sdk.providers.finger.mockvendor.classname=io.mosip.mock.sdk.impl.SampleSDK
++mosip.biometric.sdk.providers.finger.mockvendor.version=0.9
++mosip.biometric.sdk.providers.finger.mockvendor.threshold=60
++mosip.biometric.sdk.providers.iris.mockvendor.classname=io.mosip.mock.sdk.impl.SampleSDK
++mosip.biometric.sdk.providers.iris.mockvendor.version=0.9
++mosip.biometric.sdk.providers.iris.mockvendor.threshold=60
++mosip.biometric.sdk.providers.face.mockvendor.classname=io.mosip.mock.sdk.impl.SampleSDK
++mosip.biometric.sdk.providers.face.mockvendor.version=0.9
++mosip.biometric.sdk.providers.face.mockvendor.threshold=60
++mosip.biometric.sdk.provider.finger.classname=io.mosip.mock.sdk.impl.SampleSDK
++mosip.biometric.sdk.provider.finger.version=0.9
++mosip.biometric.sdk.provider.finger.threshold=60
++mosip.biometric.sdk.provider.iris.classname=io.mosip.mock.sdk.impl.SampleSDK
++mosip.biometric.sdk.provider.iris.version=0.9
++mosip.biometric.sdk.provider.iris.threshold=60
++mosip.biometric.sdk.provider.face.classname=io.mosip.mock.sdk.impl.SampleSDK
++mosip.biometric.sdk.provider.face.version=0.9
++mosip.biometric.sdk.provider.face.threshold=60
++mosip.kernel.transliteration.english-language-code=eng
++mosip.kernel.packetmanager.cbeff_only_unique_tags=Y
++mosip.registration.operator.onboarding.bioattributes=leftLittle,leftRing,leftMiddle,leftIndex,leftThumb,rightLittle,rightRing,rightMiddle,rightIndex,rightThumb,leftEye,rightEye,face
++mosip.registration.quality_check_with_sdk=N
++mosip.registration.replace_sdk_quality_score=N
++mosip.registration.onboard_yourself_url=https://docs.mosip.io/platform/modules/registration-client/first-user-registration-and-onboarding
++mosip.registration.registering_individual_url=https://docs.mosip.io/platform/modules/registration-client/registration-packet
++mosip.registration.sync_data_url=https://docs.mosip.io/platform/modules/registration-client/registration-functionality
++mosip.registration.mapping_devices_url=https://docs.mosip.io/platform/modules/registration-client/device-integration-specifications
++mosip.registration.uploading_data_url=https://docs.mosip.io/platform/modules/registration-client/ui-specification-for-registration-client
++mosip.registration.updating_biometrics_url=https://docs.mosip.io/platform/modules/registration-client/guide-to-configure-mosip-for-biometrics
++mosip.registration.mdm.validate.trust=true
++mosip.registration.rid_sync_batch_size=5
++mosip.registration.packet_upload_batch_size=5
++mosip.registration.server_profile=Staging
++mosip.registration.status_sync_batch_size=5
++mosip.regproc.packet.classifier.tagging.agegroup.ranges={'INFANT':'0-5','MINOR':'6-17','ADULT':'18-200'}
++mosip.registration.fields.to.retain.post.prid.fetch=consent,consentText,preferredLang
++mosip.role.registration.postlostridsearch=REGISTRATION_ADMIN,REGISTRATION_OFFICER,ZONAL_ADMIN,GLOBAL_ADMIN
++mosip.role.registration.postsync=REGISTRATION_ADMIN,REGISTRATION_SUPERVISOR,REGISTRATION_OFFICER,RESIDENT
++mosip.role.registration.postsyncv2=REGISTRATION_ADMIN,REGISTRATION_SUPERVISOR,REGISTRATION_OFFICER,RESIDENT
++mosip.role.registration.getsearchrid=INDIVIDUAL,REGISTRATION_PROCESSOR,REGISTRATION_ADMIN,REGISTRATION_SUPERVISOR,REGISTRATION_OFFICER,PRE_REGISTRATION_ADMIN
++mosip.registration.mdm.connection.timeout=10000
++mosip.registration.mdm.RCAPTURE.connection.timeout=40000
++mosip.registration.mdm.MOSIPDINFO.connection.timeout=5000
++mosip.registration.mdm.MOSIPDISC.connection.timeout=5000
+diff --git a/registration/registration-services/src/main/resources/props/mosip-application.properties b/registration/registration-services/src/main/resources/props/mosip-application.properties
+index 2e5d116ffd..c370e32ec2 100644
+--- a/registration/registration-services/src/main/resources/props/mosip-application.properties
++++ b/registration/registration-services/src/main/resources/props/mosip-application.properties
+@@ -9,4 +9,4 @@ mosip.reg.rollback.path=../BackUp
+ mosip.reg.cerpath=/cer//mosip_cer.cer
+ mosip.reg.xml.file.url=%s/registration-client/maven-metadata.xml
+ mosip.reg.version=1.2.0
+-mosip.client.upgrade.server.url=https://dev.mosip.net
+\ No newline at end of file
++mosip.client.upgrade.server.url=http://regclient-api.collab.mosip.net
+\ No newline at end of file
