@@ -32,3 +32,10 @@ for _ in $(seq 1 60); do
 done
 port_open "$LIVENESS_PORT" && echo "liveness service: up on 127.0.0.1:$LIVENESS_PORT" || { echo "liveness service did not start, see $RUN_DIR/passive.log"; exit 1; }
 port_open "$MDS_PORT" && echo "MockMDS:          up on 127.0.0.1:$MDS_PORT" || { echo "MockMDS did not start, see $RUN_DIR/mockmds.log"; exit 1; }
+
+# MockMDS ships with mosip.mock.sbi.quality.score=44, below the client's thresholds (iris 60, face 90).
+# Raise it for every modality through MockMDS's own admin API.
+curl -sf -X POST "http://127.0.0.1:$MDS_PORT/admin/score" -H 'Content-Type: application/json' \
+  -d "{\"type\":\"Biometric Device\",\"qualityScore\":\"${MDS_QUALITY_SCORE:-95}\",\"fromIso\":false}" > /dev/null \
+  && echo "MockMDS:          quality score set to ${MDS_QUALITY_SCORE:-95}" \
+  || echo "MockMDS:          could not set quality score, see $RUN_DIR/mockmds.log"

@@ -49,3 +49,16 @@ java   --module-path ~/mosip/FaceLiveliness-Mosip-Decode/extras/javafx-sdk-11.0.
 
 
 cd /home/gourav-anirudh/Desktop/Mosip/FaceLiveliness-Mosip-Decode/mosip/registration-client/registration && mvn clean install -Dgpg.skip=true -DskipTests=true -Dmaven.javadoc.skip=true && cd registration-client && cp target/registration-client-1.2.0.2.jar target/lib/ && cd target/lib && wget -nc https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-1.2.0.2.jar && mkdir -p lib && cp ../../../lib/logback.xml lib/ && java --module-path ../../../../../../extras/javafx-sdk-11.0.2/lib/ --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED -Dmosip.mock.backend=true -Dprism.verbose=true -cp "*" io.mosip.registration.controller.Initialization
+
+
+```
+cd /home/gourav-anirudh/Desktop/Mosip/FaceLiveliness-Mosip-Decode/mosip && export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64 PATH=/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH && (cd registration-client/registration && mvn clean install -Dgpg.skip=true -DskipTests=true -Dmaven.javadoc.skip=true) && scripts/start-services.sh && (nohup scripts/run-webcam-device.sh > ../.run/webcam.log 2>&1 &) && cd registration-client/registration/registration-client && cp target/registration-client-1.2.0.2.jar target/lib/ && cd target/lib && wget -nc https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-1.2.0.2.jar && mkdir -p lib && cp ../../../lib/logback.xml lib/ && java --module-path ../../../../../../extras/javafx-sdk-11.0.2/lib/ --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED -Dmosip.mock.backend=true -Dprism.verbose=true -cp "*" io.mosip.registration.controller.Initialization
+
+
+```
+
+```
+/home/gourav-anirudh/Desktop/Mosip/FaceLiveliness-Mosip-Decode/mosip/scripts/stop-services.sh; pkill -f mockmds_webcam_feeder
+```
+
+25864920831241
