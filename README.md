@@ -46,3 +46,6 @@ wget https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-
 java   --module-path ~/mosip/FaceLiveliness-Mosip-Decode/extras/javafx-sdk-11.0.2/lib/   --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics   --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED   -Dmosip.mock.backend=true -Dprism.verbose=true  -cp "*"   io.mosip.registration.controller.Initialization
 # use credentials demo-operator, demo-operator
 ```
+
+
+cd /home/gourav-anirudh/Desktop/Mosip/FaceLiveliness-Mosip-Decode/mosip/registration-client/registration && mvn clean install -Dgpg.skip=true -DskipTests=true -Dmaven.javadoc.skip=true && cd registration-client && cp target/registration-client-1.2.0.2.jar target/lib/ && cd target/lib && wget -nc https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-1.2.0.2.jar && mkdir -p lib && cp ../../../lib/logback.xml lib/ && java --module-path ../../../../../../extras/javafx-sdk-11.0.2/lib/ --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED -Dmosip.mock.backend=true -Dprism.verbose=true -cp "*" io.mosip.registration.controller.Initialization
