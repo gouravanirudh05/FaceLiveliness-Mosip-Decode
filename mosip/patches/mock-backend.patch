@@ -1,5 +1,36 @@
+diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
+index 818816c3a1a6dc0cba9faad71b12f0877c73ba5b..188e03942e7dddf92dfc832af6dde2016561b195 100644
+--- a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
++++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
+@@ -6,11 +6,14 @@ import java.io.IOException;
+ import java.io.InputStream;
+ import java.io.StringWriter;
+ 
++import javax.imageio.ImageIO;
++
+ import org.springframework.stereotype.Component;
+ 
+ import io.mosip.kernel.core.logger.spi.Logger;
+ import io.mosip.registration.config.AppConfig;
+ import io.mosip.registration.context.SessionContext;
++import javafx.embed.swing.SwingFXUtils;
+ import javafx.scene.image.Image;
+ import javafx.scene.image.ImageView;
+ 
+@@ -149,8 +152,9 @@ public class Streamer {
+ 					try {
+ 						imageBytes = retrieveNextImage(urlStream);
+ 						notifyFrame(imageBytes);
+-						ByteArrayInputStream imageStream = new ByteArrayInputStream(imageBytes);
+-						Image img = new Image(imageStream);
++						// Decode with ImageIO: JavaFX 11's native JPEG decoder clashes with the system libjpeg
++						// loaded by GTK on Linux ("Wrong JPEG library version: library is 80, caller expects 90").
++						Image img = SwingFXUtils.toFXImage(ImageIO.read(new ByteArrayInputStream(imageBytes)), null);
+ 						streamImage.setImage(img);
+ 						if (null != scanImage) {
+ 							setStreamImage(img);
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java
-index 4104f55447..ca16367466 100644
+index 4104f55447458778e802f3fb74660ba2f3336d33..ca16367466dae9286e40cd44c3feb6486908f4f9 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/config/impl/GlobalParamServiceImpl.java
 @@ -1,5 +1,6 @@
@@ -22,7 +53,7 @@ index 4104f55447..ca16367466 100644
  			LOGGER.info("NO Internet Connection So calling off global param sync");
  			return setErrorResponse(responseDTO, RegistrationConstants.NO_INTERNET, null);
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java
-index 630a9830a7..724035668f 100644
+index 630a9830a74105f9f0883f38b1b30408855c4541..724035668ff96fc185b7bb742edaa80d0abcf3f9 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/login/impl/LoginServiceImpl.java
 @@ -1,5 +1,7 @@
@@ -75,7 +106,7 @@ index 630a9830a7..724035668f 100644
  		LOGGER.info("REGISTRATION  - LOGINSERVICE", APPLICATION_NAME, APPLICATION_ID, "Started Initial sync");
  		List<String> results = new LinkedList<>();
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java
-index c3fe4b081e..4da8472eeb 100644
+index c3fe4b081e2dc8d16c04777ab5b37064f0a08ddc..4da8472eeb679691e22e9ab047873176d913d681 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/operator/impl/UserDetailServiceImpl.java
 @@ -1,5 +1,6 @@
@@ -96,7 +127,7 @@ index c3fe4b081e..4da8472eeb 100644
  		LOGGER.info("Entering into user detail save method...");
  		try {
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java
-index 145bab82f5..0e45d74c4b 100644
+index 145bab82f5fcca11b2007cd50f41183b59b62c88..0e45d74c4b6a6a0100e65dc484bd218633f42e5f 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/CertificateSyncServiceImpl.java
 @@ -1,5 +1,6 @@
@@ -117,7 +148,7 @@ index 145bab82f5..0e45d74c4b 100644
          Map<String, String> requestParamMap = new LinkedHashMap<>();
          SyncControl syncControl = masterSyncDao.syncJobDetails(RegistrationConstants.OPT_TO_REG_CCS_J00017);
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java
-index cd3799ee53..9edac053e7 100644
+index cd3799ee5319c8e1a1ac4ec78b587314c18dc7b6..9edac053e779e82cbcdf21957c6aa6fef66d8c4e 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/MasterSyncServiceImpl.java
 @@ -1,5 +1,6 @@
@@ -138,7 +169,7 @@ index cd3799ee53..9edac053e7 100644
  
  		if (masterSyncFieldsValidate(masterSyncDtls, triggerPoint)) {
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java
-index 891d677c55..a96ee14e94 100644
+index 891d677c558554c88666ed17d91e39645421a8aa..a96ee14e9474454fc833ac2023b9fb6086d48ce2 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PolicySyncServiceImpl.java
 @@ -1,5 +1,6 @@
@@ -159,7 +190,7 @@ index 891d677c55..a96ee14e94 100644
  
  		ResponseDTO responseDTO = new ResponseDTO();
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java
-index 0a2d3bf311..14ea57d8f4 100644
+index 0a2d3bf311abd60c01aa1739314ff4e9f924558d..14ea57d8f490f6951264c26e6ee87b90e01a5f8e 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/PublicKeySyncImpl.java
 @@ -1,5 +1,6 @@
@@ -180,7 +211,7 @@ index 0a2d3bf311..14ea57d8f4 100644
  
  		//Precondition check, proceed only if met, otherwise throws exception
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java
-index 25346f04bd..cb8ab3069d 100644
+index 25346f04bd1b7471910a17fbf6d1b19b50d3cb47..cb8ab3069d8f3ce71eca13948fe43401c1f860e1 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/service/sync/impl/TPMPublicKeySyncServiceImpl.java
 @@ -1,5 +1,6 @@
@@ -201,7 +232,7 @@ index 25346f04bd..cb8ab3069d 100644
  		LOGGER.info("Verify TPM Public Key mapping in server started");
  
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
-index e84fda6ce6..6dd3aedd63 100644
+index e84fda6ce65f24c7e895f542cd3cad5298e7323f..6dd3aedd63105c52fbd11ff06efcb5b2e1fd74b8 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/AuthTokenUtilService.java
 @@ -102,6 +102,9 @@ public class AuthTokenUtilService {
@@ -259,7 +290,7 @@ index e84fda6ce6..6dd3aedd63 100644
              String header = String.format("{\"kid\" : \"%s\"}", CryptoUtil.computeFingerPrint(clientCryptoFacade.getClientSecurity().getSigningPublicPart(), null));
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java
 new file mode 100644
-index 0000000000..937a15132f
+index 0000000000000000000000000000000000000000..937a15132fcd2d972dfda7e5ae8fb89704e7e3c1
 --- /dev/null
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockBackend.java
 @@ -0,0 +1,201 @@
@@ -466,12 +497,14 @@ index 0000000000..937a15132f
 +}
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockDataSeeder.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockDataSeeder.java
 new file mode 100644
-index 0000000000..e0b7c5dc85
+index 0000000000000000000000000000000000000000..ef253e6a79ded3900262be093262e09c623bf382
 --- /dev/null
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/MockDataSeeder.java
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,660 @@
 +package io.mosip.registration.util.restclient;
 +
++import java.io.ByteArrayOutputStream;
++import java.io.File;
 +import java.io.InputStream;
 +import java.math.BigInteger;
 +import java.nio.charset.StandardCharsets;
@@ -495,6 +528,9 @@ index 0000000000..e0b7c5dc85
 +import java.util.Map;
 +import java.util.Optional;
 +import java.util.Set;
++import java.util.UUID;
++import java.util.zip.ZipEntry;
++import java.util.zip.ZipOutputStream;
 +
 +import org.bouncycastle.asn1.x500.X500Name;
 +import org.bouncycastle.cert.X509CertificateHolder;
@@ -519,7 +555,9 @@ index 0000000000..e0b7c5dc85
 +import io.mosip.registration.constants.RegistrationConstants;
 +import io.mosip.registration.context.ApplicationContext;
 +import io.mosip.registration.dao.GlobalParamDAO;
++import io.mosip.registration.dao.PreRegistrationDataSyncDAO;
 +import io.mosip.registration.dao.UserDetailDAO;
++import io.mosip.registration.dto.PreRegistrationDTO;
 +import io.mosip.registration.dto.UserDetailDto;
 +import io.mosip.registration.dto.response.SyncDataBaseDto;
 +import io.mosip.registration.dto.response.SyncDataResponseDto;
@@ -527,8 +565,10 @@ index 0000000000..e0b7c5dc85
 +import io.mosip.registration.entity.FileSignature;
 +import io.mosip.registration.entity.GlobalParam;
 +import io.mosip.registration.entity.MachineMaster;
++import io.mosip.registration.entity.PreRegistrationList;
 +import io.mosip.registration.entity.RegistrationCenter;
 +import io.mosip.registration.entity.ScreenAuthorization;
++import io.mosip.registration.entity.SyncTransaction;
 +import io.mosip.registration.entity.UserDetail;
 +import io.mosip.registration.entity.UserMachineMapping;
 +import io.mosip.registration.entity.id.AppAuthenticationMethodId;
@@ -537,6 +577,7 @@ index 0000000000..e0b7c5dc85
 +import io.mosip.registration.entity.id.ScreenAuthorizationId;
 +import io.mosip.registration.entity.id.UserMachineMappingID;
 +import io.mosip.registration.enums.Role;
++import io.mosip.registration.jobs.SyncManager;
 +import io.mosip.registration.repositories.AppAuthenticationRepository;
 +import io.mosip.registration.repositories.DynamicFieldRepository;
 +import io.mosip.registration.repositories.FileSignatureRepository;
@@ -545,6 +586,7 @@ index 0000000000..e0b7c5dc85
 +import io.mosip.registration.repositories.RegistrationCenterRepository;
 +import io.mosip.registration.repositories.ScreenAuthorizationRepository;
 +import io.mosip.registration.repositories.UserMachineMappingRepository;
++import io.mosip.registration.service.external.PreRegZipHandlingService;
 +import io.mosip.registration.util.healthcheck.RegistrationSystemPropertiesChecker;
 +import io.mosip.registration.util.mastersync.ClientSettingSyncHelper;
 +
@@ -558,7 +600,8 @@ index 0000000000..e0b7c5dc85
 + * app_authentication_method (password login), screen_authorization,
 + * identity_schema + process_spec (via the real schema sync), master data
 + * (dynamic fields, locations, documents, templates, ... via the real master sync storage), the
-+ * signed applicant type script, the MockMDS device root CA, and, on
++ * signed applicant type script, the MockMDS device root CA, a sample pre-registration
++ * ({@link #MOCK_PRE_REG_ID}), and, on
 + * request, a user with roles + user/machine mapping.
 + */
 +@Component
@@ -575,6 +618,12 @@ index 0000000000..e0b7c5dc85
 +	private static final String APPLICANT_TYPE_SCRIPT = "applicanttype.mvel";
 +	private static final String DEVICE_ROOT_CA_RESOURCE = "/mock-device-rootca.cer";
 +	private static final String DEVICE_TRUST_DOMAIN = "DEVICE";
++	/** Valid for the client's PRID validator (14 digits, Verhoeff checksum, no sequences / repeats). */
++	public static final String MOCK_PRE_REG_ID = "25864920831241";
++	private static final String PRE_REG_ID_JSON_RESOURCE = "/mock-prereg-id.json";
++	private static final String PRE_REG_DOCUMENT_RESOURCE = "/mock-prereg-document.pdf";
++	/** Zip entries named {@code <value>.<format>} of the document fields in mock-prereg-id.json */
++	private static final List<String> PRE_REG_DOCUMENTS = Arrays.asList("POA_RNC.pdf", "POI_CIN.pdf");
 +
 +	private static final List<String> ROLES = Arrays.asList(Role.REGISTRATION_OFFICER.name(),
 +			Role.REGISTRATION_SUPERVISOR.name());
@@ -616,6 +665,12 @@ index 0000000000..e0b7c5dc85
 +	private FileSignatureRepository fileSignatureRepository;
 +	@Autowired
 +	private PartnerCertificateManagerService partnerCertificateManagerService;
++	@Autowired
++	private PreRegistrationDataSyncDAO preRegistrationDAO;
++	@Autowired
++	private PreRegZipHandlingService preRegZipHandlingService;
++	@Autowired
++	private SyncManager syncManager;
 +
 +	private boolean baseSeeded = false;
 +	private boolean newParamsInserted = false;
@@ -641,6 +696,7 @@ index 0000000000..e0b7c5dc85
 +		seedMasterData();
 +		seedApplicantTypeScript();
 +		seedDeviceTrust();
++		seedPreRegistration();
 +
 +		// Normally set at the end of the first sync step of the real initialSync()
 +		ApplicationContext.map().put(RegistrationConstants.KEY_INDEX, keyIndex);
@@ -1025,7 +1081,74 @@ index 0000000000..e0b7c5dc85
 +		}
 +	}
 +
++	/**
++	 * Stores a pre-registration packet the way a download from the pre-registration service would
++	 * (PreRegistrationDataSyncServiceImpl#downloadAndSavePacket): the zip (ID.json plus documents) is
++	 * encrypted for this machine, then re-encrypted and saved by the real PreRegZipHandlingService. "Fetch
++	 * Data" with {@link #MOCK_PRE_REG_ID} then goes through the unchanged decrypt / extract path.
++	 */
++	private void seedPreRegistration() {
++		PreRegistrationList existing = preRegistrationDAO.get(MOCK_PRE_REG_ID);
++		if (existing != null && new File(existing.getPacketPath()).exists())
++			return;
++		try {
++			ByteArrayOutputStream zip = new ByteArrayOutputStream();
++			try (ZipOutputStream out = new ZipOutputStream(zip)) {
++				out.putNextEntry(new ZipEntry("ID.json"));
++				out.write(readResource(PRE_REG_ID_JSON_RESOURCE));
++				out.closeEntry();
++				byte[] document = readResource(PRE_REG_DOCUMENT_RESOURCE);
++				for (String name : PRE_REG_DOCUMENTS) {
++					out.putNextEntry(new ZipEntry(name));
++					out.write(document);
++					out.closeEntry();
++				}
++			}
++			ApplicationContext.map().putIfAbsent(RegistrationConstants.PRE_REG_PACKET_LOCATION,
++					MockBackend.defaultGlobalConfig().get(RegistrationConstants.PRE_REG_PACKET_LOCATION));
++			byte[] publicKey = clientCryptoFacade.getClientSecurity().getEncryptionPublicPart();
++			PreRegistrationDTO saved = preRegZipHandlingService.encryptAndSavePreRegPacket(MOCK_PRE_REG_ID,
++					clientCryptoFacade.encrypt(publicKey, zip.toByteArray()));
++
++			SyncTransaction syncTransaction = syncManager.createSyncTransaction(
++					RegistrationConstants.RETRIEVED_PRE_REG_ID, RegistrationConstants.RETRIEVED_PRE_REG_ID,
++					RegistrationConstants.JOB_TRIGGER_POINT_SYSTEM, RegistrationConstants.OPT_TO_REG_PDS_J00003);
++			PreRegistrationList preRegistration = existing != null ? existing : new PreRegistrationList();
++			if (existing == null) {
++				preRegistration.setId(UUID.randomUUID().toString());
++				preRegistration.setPreRegId(MOCK_PRE_REG_ID);
++				preRegistration.setIsActive(true);
++				preRegistration.setIsDeleted(false);
++				preRegistration.setCrBy(SEEDER);
++				preRegistration.setCrDtime(Timestamp.valueOf(DateUtils.getUTCCurrentDateTime()));
++			}
++			preRegistration.setPacketSymmetricKey(saved.getSymmetricKey());
++			preRegistration.setPacketPath(saved.getPacketPath());
++			preRegistration.setStatusCode(syncTransaction.getStatusCode());
++			preRegistration.setStatusComment(syncTransaction.getStatusComment());
++			preRegistration.setsJobId(syncTransaction.getSyncJobId());
++			preRegistration.setSynctrnId(syncTransaction.getId());
++			preRegistration.setLangCode(syncTransaction.getLangCode());
++			preRegistration.setLastUpdatedPreRegTimeStamp(Timestamp.valueOf(DateUtils.getUTCCurrentDateTime()));
++			if (existing == null)
++				preRegistrationDAO.save(preRegistration);
++			else
++				preRegistrationDAO.update(preRegistration);
++			LOGGER.info("[MOCK SEED] Stored pre-registration {} at {}", MOCK_PRE_REG_ID, saved.getPacketPath());
++		} catch (Exception e) {
++			LOGGER.error("[MOCK SEED] Pre-registration seeding failed", e);
++		}
++	}
++
 +	// ------------------------------------------------------------------
++
++	private static byte[] readResource(String resource) throws java.io.IOException {
++		try (InputStream in = MockDataSeeder.class.getResourceAsStream(resource)) {
++			if (in == null)
++				throw new java.io.IOException(resource + " not found on classpath");
++			return in.readAllBytes();
++		}
++	}
 +
 +	private static String lang() {
 +		String lang = ApplicationContext.applicationLanguage();
@@ -1039,7 +1162,7 @@ index 0000000000..e0b7c5dc85
 +	}
 +}
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
-index d695a8fe90..06c680a9a3 100644
+index d695a8fe90a22dfbebc3f890013dbca5a2061b9a..06c680a9a3917d33308cd3c91af63e5bfa95de27 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/util/restclient/ServiceDelegateUtil.java
 @@ -76,6 +76,9 @@ public class ServiceDelegateUtil {
@@ -1089,7 +1212,7 @@ index d695a8fe90..06c680a9a3 100644
  		Map<String, Object> responseMap = null;
 diff --git a/registration/registration-services/src/main/resources/mock-applicanttype.mvel b/registration/registration-services/src/main/resources/mock-applicanttype.mvel
 new file mode 100644
-index 0000000000..69da629d5d
+index 0000000000000000000000000000000000000000..69da629d5dcc10a4b995630e1817ada35ad01531
 --- /dev/null
 +++ b/registration/registration-services/src/main/resources/mock-applicanttype.mvel
 @@ -0,0 +1,192 @@
@@ -1287,7 +1410,7 @@ index 0000000000..69da629d5d
 +}
 diff --git a/registration/registration-services/src/main/resources/mock-device-rootca.cer b/registration/registration-services/src/main/resources/mock-device-rootca.cer
 new file mode 100644
-index 0000000000..dfaf87e47e
+index 0000000000000000000000000000000000000000..dfaf87e47eb274b9353c2bcab4ff37ddff841d14
 --- /dev/null
 +++ b/registration/registration-services/src/main/resources/mock-device-rootca.cer
 @@ -0,0 +1,20 @@
@@ -1313,10 +1436,10 @@ index 0000000000..dfaf87e47e
 +-----END CERTIFICATE-----
 diff --git a/registration/registration-services/src/main/resources/mock-global-config.properties b/registration/registration-services/src/main/resources/mock-global-config.properties
 new file mode 100644
-index 0000000000..3c662fea63
+index 0000000000000000000000000000000000000000..e9fa41ee913d4aff3223542d09c187513f1a8e98
 --- /dev/null
 +++ b/registration/registration-services/src/main/resources/mock-global-config.properties
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,143 @@
 +# Default client configuration used ONLY when -Dmosip.mock.backend=true.
 +# Derived from mosip-config (release-1.2.0) registration-default.properties:
 +# entries containing ${...} placeholders and entries already seeded by initial.sql are omitted.
@@ -1345,7 +1468,9 @@ index 0000000000..3c662fea63
 +mosip.registration.reviewer_authentication_configuration=Y
 +mosip.registration.username_pwd_length=50
 +mosip.registration.finger_print_score=80
-+mosip.registration.capture_time_out=10000
++# 10000 in registration-default.properties. The client sends it as the device STREAM timeout, so the face
++# stream would close after 10 s, before a face liveness session (passive + active challenges) can finish.
++mosip.registration.capture_time_out=180000
 +mosip.registration.document_size=2000000
 +mosip.registration.pre_reg_no_of_days_limit=7
 +mosip.registration.document_scanner_dpi=75
@@ -1455,9 +1580,12 @@ index 0000000000..3c662fea63
 +mosip.kernel.uin.length.reverse-digits-limit=5
 +mosip.kernel.applicantType.mvel.file=applicanttype.mvel
 +mosip.right_to_left_orientation=ara
++# Face liveness (FaceLivenessGuard): never accept on the passive score alone in resident registration, so every
++# face capture shows the active challenges (PAD still runs during them). Needs a live face: run-webcam-device.sh.
++mosip.registration.face.liveness.resident.passive.threshold=1.0
 diff --git a/registration/registration-services/src/main/resources/mock-id-schema.json b/registration/registration-services/src/main/resources/mock-id-schema.json
 new file mode 100644
-index 0000000000..7d61588137
+index 0000000000000000000000000000000000000000..7d61588137e3d6757c53529ff8804f7c63c95533
 --- /dev/null
 +++ b/registration/registration-services/src/main/resources/mock-id-schema.json
 @@ -0,0 +1,5079 @@
@@ -6543,7 +6671,7 @@ index 0000000000..7d61588137
 \ No newline at end of file
 diff --git a/registration/registration-services/src/main/resources/mock-master-data.json b/registration/registration-services/src/main/resources/mock-master-data.json
 new file mode 100644
-index 0000000000..7fb694813d
+index 0000000000000000000000000000000000000000..7fb694813d8a49e3e5f93a100a23ea0fd224b271
 --- /dev/null
 +++ b/registration/registration-services/src/main/resources/mock-master-data.json
 @@ -0,0 +1,2792 @@
@@ -9340,8 +9468,74 @@ index 0000000000..7fb694813d
 + }
 +]
 \ No newline at end of file
+diff --git a/registration/registration-services/src/main/resources/mock-prereg-document.pdf b/registration/registration-services/src/main/resources/mock-prereg-document.pdf
+new file mode 100644
+index 0000000000000000000000000000000000000000..9465c944e5d613dc44e51df88d03ee2846e39524
+--- /dev/null
++++ b/registration/registration-services/src/main/resources/mock-prereg-document.pdf
+@@ -0,0 +1,32 @@
++%PDF-1.4
++1 0 obj
++<< /Type /Catalog /Pages 2 0 R >>
++endobj
++2 0 obj
++<< /Type /Pages /Kids [3 0 R] /Count 1 >>
++endobj
++3 0 obj
++<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
++endobj
++4 0 obj
++<< /Length 61 >>
++stream
++BT /F1 24 Tf 72 760 Td (Mock pre-registration document) Tj ET
++endstream
++endobj
++5 0 obj
++<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
++endobj
++xref
++0 6
++0000000000 65535 f 
++0000000009 00000 n 
++0000000058 00000 n 
++0000000115 00000 n 
++0000000241 00000 n 
++0000000352 00000 n 
++trailer
++<< /Size 6 /Root 1 0 R >>
++startxref
++422
++%%EOF
+diff --git a/registration/registration-services/src/main/resources/mock-prereg-id.json b/registration/registration-services/src/main/resources/mock-prereg-id.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..25eac41605e50d5633ce34e291401ef391f9fd41
+--- /dev/null
++++ b/registration/registration-services/src/main/resources/mock-prereg-id.json
+@@ -0,0 +1,22 @@
++{
++  "identity": {
++    "IDSchemaVersion": 0.1,
++    "fullName": [ { "language": "eng", "value": "Asha Kumar" } ],
++    "dateOfBirth": "1990/05/15",
++    "gender": [ { "language": "eng", "value": "FLE" } ],
++    "residenceStatus": [ { "language": "eng", "value": "NFR" } ],
++    "addressLine1": [ { "language": "eng", "value": "12 Avenue Mohammed V" } ],
++    "addressLine2": [ { "language": "eng", "value": "Ben Mansour" } ],
++    "addressLine3": [ { "language": "eng", "value": "Kenitra" } ],
++    "referenceIdentityNumber": "2345678901",
++    "region": [ { "language": "eng", "value": "RSK" } ],
++    "province": [ { "language": "eng", "value": "KTA" } ],
++    "city": [ { "language": "eng", "value": "KNT" } ],
++    "zone": [ { "language": "eng", "value": "BNMR" } ],
++    "postalCode": "14022",
++    "phone": "9876543210",
++    "email": "asha.kumar@example.com",
++    "proofOfAddress": { "format": "pdf", "type": "RNC", "value": "POA_RNC", "refNumber": "RNC-2026-001" },
++    "proofOfIdentity": { "format": "pdf", "type": "CIN", "value": "POI_CIN", "refNumber": "CIN-2026-001" }
++  }
++}
 diff --git a/registration/registration-services/src/main/resources/props/mosip-application.properties b/registration/registration-services/src/main/resources/props/mosip-application.properties
-index 2e5d116ffd..c370e32ec2 100644
+index 2e5d116ffd885794e167d230f1debee57387258f..c370e32ec29fbf2de764b8e710e7f40299ec5bfe 100644
 --- a/registration/registration-services/src/main/resources/props/mosip-application.properties
 +++ b/registration/registration-services/src/main/resources/props/mosip-application.properties
 @@ -9,4 +9,4 @@ mosip.reg.rollback.path=../BackUp
