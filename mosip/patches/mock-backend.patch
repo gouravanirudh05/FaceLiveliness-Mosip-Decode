@@ -1436,10 +1436,10 @@ index 0000000000000000000000000000000000000000..dfaf87e47eb274b9353c2bcab4ff37dd
 +-----END CERTIFICATE-----
 diff --git a/registration/registration-services/src/main/resources/mock-global-config.properties b/registration/registration-services/src/main/resources/mock-global-config.properties
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9fa41ee913d4aff3223542d09c187513f1a8e98
+index 0000000000000000000000000000000000000000..9f1038da07829132372a642e06edf57284c127a0
 --- /dev/null
 +++ b/registration/registration-services/src/main/resources/mock-global-config.properties
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,145 @@
 +# Default client configuration used ONLY when -Dmosip.mock.backend=true.
 +# Derived from mosip-config (release-1.2.0) registration-default.properties:
 +# entries containing ${...} placeholders and entries already seeded by initial.sql are omitted.
@@ -1583,6 +1583,8 @@ index 0000000000000000000000000000000000000000..e9fa41ee913d4aff3223542d09c18751
 +# Face liveness (FaceLivenessGuard): never accept on the passive score alone in resident registration, so every
 +# face capture shows the active challenges (PAD still runs during them). Needs a live face: run-webcam-device.sh.
 +mosip.registration.face.liveness.resident.passive.threshold=1.0
++# Seconds per challenge step (last value repeats). The engine default (18,16,12) makes a failed session take ~90 s.
++mosip.registration.face.liveness.active.challenge.timeout.seconds=8,6,5
 diff --git a/registration/registration-services/src/main/resources/mock-id-schema.json b/registration/registration-services/src/main/resources/mock-id-schema.json
 new file mode 100644
 index 0000000000000000000000000000000000000000..7d61588137e3d6757c53529ff8804f7c63c95533

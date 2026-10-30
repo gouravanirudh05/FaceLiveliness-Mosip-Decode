@@ -1680,6 +1680,27 @@ index d6c516f0481e76686533b206d3208700d625172c..29aae33ba3b3086274da838067c2dfe6
                                               </children>
                                            </GridPane>
                                            <TextField fx:id="faceUserId" promptText="%username" styleClass="authenticationStyle" />
+diff --git a/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml b/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml
+index 08bef3b92d4320b33d9628c57f57b89d84c919cb..9e8120674c3682afa6bdaba907e74d15c64207c9 100644
+--- a/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml
++++ b/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml
+@@ -10,6 +10,7 @@
+ <?import javafx.scene.layout.GridPane?>
+ <?import javafx.scene.layout.HBox?>
+ <?import javafx.scene.layout.RowConstraints?>
++<?import io.mosip.registration.controller.device.LivenessOverlayPane?>
+ 
+ <GridPane fx:id="biometric" maxHeight="-Infinity" maxWidth="-Infinity" minHeight="-Infinity" minWidth="-Infinity" prefHeight="550.0" prefWidth="725.0" xmlns="http://javafx.com/javafx/20.0.1" xmlns:fx="http://javafx.com/fxml/1">
+     <columnConstraints>
+@@ -97,6 +98,8 @@
+                                         <GridPane fx:id="biometricPane" prefHeight="98.0" prefWidth="81.0" styleClass="biometricPaneSelected">
+                                             <children>
+                                                 <ImageView fx:id="biometricImage" fitHeight="${biometricPane.height-10}" fitWidth="${biometricPane.width-10}" pickOnBounds="true" preserveRatio="true" GridPane.halignment="CENTER" GridPane.valignment="TOP" />
++                                                <!-- Face liveness: positioning guide, status, prompts and progress over the face stream -->
++                                                <LivenessOverlayPane fx:id="livenessOverlay" GridPane.halignment="CENTER" GridPane.valignment="TOP" />
+                                             </children>
+                                             <columnConstraints>
+                                                 <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" percentWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml b/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
 index e768a5579dfd52101408e8fa4195da477c48455f..75a8be06336768b02ab1e9a4d84f0f0d4a24c9ed 100644
 --- a/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
