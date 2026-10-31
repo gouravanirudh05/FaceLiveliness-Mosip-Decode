@@ -1,5 +1,5 @@
 diff --git a/registration/registration-client/pom.xml b/registration/registration-client/pom.xml
-index 4e5fdd6ec8d0890a805b1e6d837416b3bc3d5aa3..3b12fe1175634703dfc991e569ce7b41664cfbb3 100644
+index 4e5fdd6..3b12fe1 100644
 --- a/registration/registration-client/pom.xml
 +++ b/registration/registration-client/pom.xml
 @@ -28,6 +28,18 @@
@@ -22,7 +22,7 @@ index 4e5fdd6ec8d0890a805b1e6d837416b3bc3d5aa3..3b12fe1175634703dfc991e569ce7b41
  		<!--<dependency>
  			<groupId>org.apache.httpcomponents</groupId>
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java
-index 113de5ce22f21da4eab3000531d448219cd1b186..125c8a683ae86d42d673b0274bd01be0aeedda77 100644
+index 113de5c..125c8a6 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java
 @@ -28,7 +28,12 @@ import io.mosip.registration.context.ApplicationContext;
@@ -86,7 +86,7 @@ index 113de5ce22f21da4eab3000531d448219cd1b186..125c8a683ae86d42d673b0274bd01be0
  			}
  		});
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java
-index bc67587fc72519ffd72842dbc1892aeb04c23ace..c1a432bae10ea44a36f2a1100403fa4a1cb53187 100644
+index bc67587..c1a432b 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java
 @@ -35,7 +35,12 @@ import io.mosip.registration.context.SessionContext;
@@ -153,7 +153,7 @@ index bc67587fc72519ffd72842dbc1892aeb04c23ace..c1a432bae10ea44a36f2a1100403fa4a
  				progressIndicator.setVisible(false);
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/FaceLivenessGuard.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/FaceLivenessGuard.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..93f7ca30290b99e4e95a3da30bcbba83293b9451
+index 0000000..93f7ca3
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/FaceLivenessGuard.java
 @@ -0,0 +1,756 @@
@@ -914,7 +914,7 @@ index 0000000000000000000000000000000000000000..93f7ca30290b99e4e95a3da30bcbba83
 +	}
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java
-index c81056367d6fb345cea1e725bb88d31bbb8cb158..50815b18dbd49c9b4c1220caedd317ad8e5a1e1f 100644
+index c810563..50815b1 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java
 @@ -17,6 +17,7 @@ import org.springframework.context.annotation.Scope;
@@ -972,7 +972,7 @@ index c81056367d6fb345cea1e725bb88d31bbb8cb158..50815b18dbd49c9b4c1220caedd317ad
  				// Enable Auto-Logout
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessEngineManager.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessEngineManager.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..49cced144fa5e3e51e621830e9891df569fcf7fd
+index 0000000..49cced1
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessEngineManager.java
 @@ -0,0 +1,103 @@
@@ -1081,7 +1081,7 @@ index 0000000000000000000000000000000000000000..49cced144fa5e3e51e621830e9891df5
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessMetrics.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessMetrics.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3869a094c61d1d877e22c90a6d273daa29e4377
+index 0000000..c3869a0
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessMetrics.java
 @@ -0,0 +1,106 @@
@@ -1193,7 +1193,7 @@ index 0000000000000000000000000000000000000000..c3869a094c61d1d877e22c90a6d273da
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessOverlayPane.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessOverlayPane.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae81d5832d283f84008443eb105c1facbb6e0bfa
+index 0000000..ae81d58
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessOverlayPane.java
 @@ -0,0 +1,172 @@
@@ -1370,18 +1370,31 @@ index 0000000000000000000000000000000000000000..ae81d5832d283f84008443eb105c1fac
 +	}
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
-index 105567a9994b7cdedeef91b7e40939191935b53f..818816c3a1a6dc0cba9faad71b12f0877c73ba5b 100644
+index 105567a..ec9b3ac 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
-@@ -1,6 +1,7 @@
+@@ -1,15 +1,20 @@
  package io.mosip.registration.controller.device;
  
++import java.awt.image.BufferedImage;
  import java.io.ByteArrayInputStream;
 +import java.io.EOFException;
  import java.io.IOException;
  import java.io.InputStream;
  import java.io.StringWriter;
-@@ -20,6 +21,54 @@ public class Streamer {
+ 
++import javax.imageio.ImageIO;
++
+ import org.springframework.stereotype.Component;
+ 
+ import io.mosip.kernel.core.logger.spi.Logger;
+ import io.mosip.registration.config.AppConfig;
+ import io.mosip.registration.context.SessionContext;
++import javafx.embed.swing.SwingFXUtils;
+ import javafx.scene.image.Image;
+ import javafx.scene.image.ImageView;
+ 
+@@ -20,6 +25,54 @@ public class Streamer {
  
  	private InputStream urlStream;
  
@@ -1436,7 +1449,7 @@ index 105567a9994b7cdedeef91b7e40939191935b53f..818816c3a1a6dc0cba9faad71b12f087
  	public void setUrlStream(InputStream inputStream) {
  
  		if (urlStream != null) {
-@@ -39,6 +88,7 @@ public class Streamer {
+@@ -39,6 +92,7 @@ public class Streamer {
  		} else {
  			this.urlStream = null;
  			isRunning = false;
@@ -1444,15 +1457,18 @@ index 105567a9994b7cdedeef91b7e40939191935b53f..818816c3a1a6dc0cba9faad71b12f087
  		}
  
  	}
-@@ -98,6 +148,7 @@ public class Streamer {
+@@ -98,8 +152,8 @@ public class Streamer {
  				while (null != urlStream) {
  					try {
  						imageBytes = retrieveNextImage(urlStream);
+-						ByteArrayInputStream imageStream = new ByteArrayInputStream(imageBytes);
+-						Image img = new Image(imageStream);
 +						notifyFrame(imageBytes);
- 						ByteArrayInputStream imageStream = new ByteArrayInputStream(imageBytes);
- 						Image img = new Image(imageStream);
++						Image img = decode(imageBytes);
  						streamImage.setImage(img);
-@@ -107,6 +158,7 @@ public class Streamer {
+ 						if (null != scanImage) {
+ 							setStreamImage(img);
+@@ -107,6 +161,7 @@ public class Streamer {
  					} catch (Throwable t) {
  						LOGGER.error("Failed in streamer_thread", t);
  						urlStream = null;
@@ -1460,7 +1476,31 @@ index 105567a9994b7cdedeef91b7e40939191935b53f..818816c3a1a6dc0cba9faad71b12f087
  					}
  				}
  			}
-@@ -152,9 +204,17 @@ public class Streamer {
+@@ -118,6 +173,23 @@ public class Streamer {
+ 
+ 	}
+ 
++	/**
++	 * Decodes a preview frame. JavaFX 11.0.2's native JPEG decoder fails on Linux desktops where GTK has already
++	 * loaded the system libjpeg-turbo ("Wrong JPEG library version: library is 80, caller expects 90"), which left
++	 * the preview blank; fall back to ImageIO then.
++	 */
++	static Image decode(byte[] jpeg) throws IOException {
++		Image img = new Image(new ByteArrayInputStream(jpeg));
++		if (!img.isError()) {
++			return img;
++		}
++		BufferedImage buffered = ImageIO.read(new ByteArrayInputStream(jpeg));
++		if (buffered == null) {
++			throw new IOException("Unreadable preview frame");
++		}
++		return SwingFXUtils.toFXImage(buffered, null);
++	}
++
+ 	/**
+ 	 * Using the urlStream get the next JPEG image as a byte[]
+ 	 *
+@@ -152,9 +224,17 @@ public class Streamer {
  			}
  		}
  
@@ -1480,7 +1520,7 @@ index 105567a9994b7cdedeef91b7e40939191935b53f..818816c3a1a6dc0cba9faad71b12f087
  		}
  
  		// && urlStream.read()!=-1
-@@ -190,6 +250,7 @@ public class Streamer {
+@@ -190,6 +270,7 @@ public class Streamer {
  				if (urlStream != null)
  					urlStream.close();
  				streamer_thread = null;
@@ -1489,7 +1529,7 @@ index 105567a9994b7cdedeef91b7e40939191935b53f..818816c3a1a6dc0cba9faad71b12f087
  				LOGGER.error("Failed to close the stream thread", e);
  			}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java
-index 232c7912d6ae833b64ecb41d6fb4b7e43b4735ff..00adf0277e10f5875bf7775cd47e5a1729a10fc2 100644
+index 232c791..00adf02 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java
 @@ -25,7 +25,12 @@ import io.mosip.registration.constants.RegistrationUIConstants;
@@ -1554,7 +1594,7 @@ index 232c7912d6ae833b64ecb41d6fb4b7e43b4735ff..00adf0277e10f5875bf7775cd47e5a17
  
  			}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java
-index d11eac20117bebe36b0fbdb1d2042cca673625d7..4c95624ecedde4bea873ce8583b2555674d955b3 100644
+index d11eac2..4c95624 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java
 @@ -20,6 +20,7 @@ import io.mosip.registration.constants.RegistrationUIConstants;
@@ -1660,7 +1700,7 @@ index d11eac20117bebe36b0fbdb1d2042cca673625d7..4c95624ecedde4bea873ce8583b25556
  
  	private GridPane createDevicePane(String type, String key, List<MdmBioDevice> bioDevices,
 diff --git a/registration/registration-client/src/main/resources/fxml/Authentication.fxml b/registration/registration-client/src/main/resources/fxml/Authentication.fxml
-index d6c516f0481e76686533b206d3208700d625172c..29aae33ba3b3086274da838067c2dfe623adb5f7 100644
+index d6c516f..29aae33 100644
 --- a/registration/registration-client/src/main/resources/fxml/Authentication.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/Authentication.fxml
 @@ -1,6 +1,7 @@
@@ -1702,7 +1742,7 @@ index 08bef3b92d4320b33d9628c57f57b89d84c919cb..9e8120674c3682afa6bdaba907e74d15
                                              <columnConstraints>
                                                  <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" percentWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml b/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
-index e768a5579dfd52101408e8fa4195da477c48455f..75a8be06336768b02ab1e9a4d84f0f0d4a24c9ed 100644
+index e768a55..75a8be0 100644
 --- a/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
 @@ -1,6 +1,7 @@
@@ -1723,7 +1763,7 @@ index e768a5579dfd52101408e8fa4195da477c48455f..75a8be06336768b02ab1e9a4d84f0f0d
                                                           <columnConstraints>
                                                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" percentWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml b/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml
-index eafc0011b9d11a717dc16c986cbed7fe1f422e7f..7e490c162805a04fa93d76a9d9f3984ed26943e8 100644
+index eafc001..7e490c1 100644
 --- a/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml
 @@ -1,6 +1,7 @@
@@ -1744,7 +1784,7 @@ index eafc0011b9d11a717dc16c986cbed7fe1f422e7f..7e490c162805a04fa93d76a9d9f3984e
  															<columnConstraints>
  																<ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml b/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml
-index 2ba0e89d0147d11273881186aa55c768b6461dc1..b6464c10dc255c8cb8774de78018583e98b51abc 100644
+index 2ba0e89..b6464c1 100644
 --- a/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml
 @@ -1,6 +1,7 @@
@@ -1766,10 +1806,10 @@ index 2ba0e89d0147d11273881186aa55c768b6461dc1..b6464c10dc255c8cb8774de78018583e
            </children>
 diff --git a/registration/registration-client/src/test/java/io/mosip/registration/controller/device/FaceLivenessGuardTest.java b/registration/registration-client/src/test/java/io/mosip/registration/controller/device/FaceLivenessGuardTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc0b2a240696c0099bfa3c2972189f3a98bf5101
+index 0000000..0d83739
 --- /dev/null
 +++ b/registration/registration-client/src/test/java/io/mosip/registration/controller/device/FaceLivenessGuardTest.java
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,494 @@
 +package io.mosip.registration.controller.device;
 +
 +import static org.junit.Assert.assertEquals;
@@ -1899,15 +1939,28 @@ index 0000000000000000000000000000000000000000..cc0b2a240696c0099bfa3c2972189f3a
 +		assumeTrue("MockMDS not running on " + MDS_PORT, listening(MDS_PORT));
 +	}
 +
-+	/** Opens the MockMDS face stream exactly like the client's SBI providers: HTTP method STREAM. */
++	/**
++	 * Opens the MockMDS face stream exactly like the client's SBI providers: HTTP method STREAM. MockMDS stays
++	 * busy after the previous test's stream is closed until its next frame write fails, and meanwhile answers
++	 * with a JSON error (111, device busy) instead of a multipart stream; wait for the device to be released.
++	 */
 +	private static InputStream openMockMdsFaceStream() throws Exception {
-+		CloseableHttpClient http = HttpClients.createDefault();
-+		CloseableHttpResponse response = http.execute(RequestBuilder.create("STREAM")
-+				.setUri("http://127.0.0.1:" + MDS_PORT + "/stream")
-+				.setEntity(new StringEntity("{\"deviceId\":\"3\",\"deviceSubId\":\"0\",\"timeout\":\"120000\"}",
-+						ContentType.APPLICATION_JSON))
-+				.build());
-+		return response.getEntity().getContent();
++		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
++		while (true) {
++			CloseableHttpClient http = HttpClients.createDefault();
++			CloseableHttpResponse response = http.execute(RequestBuilder.create("STREAM")
++					.setUri("http://127.0.0.1:" + MDS_PORT + "/stream")
++					.setEntity(new StringEntity("{\"deviceId\":\"3\",\"deviceSubId\":\"0\",\"timeout\":\"120000\"}",
++							ContentType.APPLICATION_JSON))
++					.build());
++			String type = response.getFirstHeader("Content-Type") == null ? ""
++					: response.getFirstHeader("Content-Type").getValue();
++			if (type.startsWith("multipart/") || System.nanoTime() > deadline) {
++				return response.getEntity().getContent();
++			}
++			http.close();
++			Thread.sleep(200);
++		}
 +	}
 +
 +	private void streamFromMockMds() throws Exception {
@@ -2251,8 +2304,24 @@ index 0000000000000000000000000000000000000000..cc0b2a240696c0099bfa3c2972189f3a
 +		return f.get(10, TimeUnit.SECONDS);
 +	}
 +}
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java
+index dadc2e7..01f05e2 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java
+@@ -57,6 +57,11 @@ public class AuditManagerSerivceImpl extends BaseService implements AuditManager
+ 		String hostIP = "localhost";
+ 		String hostName = RegistrationSystemPropertiesChecker.getMachineId();
+ 		hostName = hostName != null ? hostName : String.valueOf(ApplicationContext.map().get(RegistrationConstants.DEFAULT_HOST_NAME));
++		// AUDIT_LOG.HOST_NAME is VARCHAR(32). Windows host names fit (max 15), Linux ones may not, and an
++		// over-long name made every audit insert, and with it the login, fail.
++		if (hostName.length() > 32) {
++			hostName = hostName.substring(0, 32);
++		}
+ 
+ 		if (auditEventEnum.getId().contains(RegistrationConstants.REGISTRATION_EVENTS)
+ 				&& getRegistrationDTOFromSession() != null
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java b/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java
-index 937d040a90832343a862c119916cd586b44cc435..bc4b2c18e7f9e40c7dce939ef9838d9050566b91 100644
+index 937d040..bc4b2c1 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java
 @@ -312,6 +312,19 @@ public enum AuditEvent {
@@ -2275,3 +2344,19 @@ index 937d040a90832343a862c119916cd586b44cc435..bc4b2c18e7f9e40c7dce939ef9838d90
  	
  	CLIENT_UPGRADE_JARS_DOWNLOADED("REG-UPG-001", USER_EVENT.getCode(), "CLIENT_UPGRADE_JARS_DOWNLOADED",
  			"Client Upgrade: Successfully downloaded all the upgrade jars"),
+diff --git a/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java
+index 4048805..cf1e811 100644
+--- a/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java
++++ b/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java
+@@ -121,7 +121,10 @@ public class SyncManagerImpl extends BaseService implements SyncManager {
+ 
+ 			syncTransaction.setTriggerPoint(triggerPoint);
+ 
+-			syncTransaction.setSyncFrom(RegistrationSystemPropertiesChecker.getMachineId());
++			// SYNC_TRANSACTION.SYNC_FROM is VARCHAR(32). Windows host names fit (max 15), Linux ones may not, and an
++			// over-long name made saving the sync transaction, and with it the initial sync, fail.
++			String syncFrom = RegistrationSystemPropertiesChecker.getMachineId();
++			syncTransaction.setSyncFrom(syncFrom != null && syncFrom.length() > 32 ? syncFrom.substring(0, 32) : syncFrom);
+ 
+ 			syncTransaction.setSyncTo(RegistrationConstants.JOB_SYNC_TO_SERVER);
+ 

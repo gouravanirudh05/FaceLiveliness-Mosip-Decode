@@ -222,3 +222,5 @@ __marimo__/
 .build-logs/
 # maven-shade-plugin output
 dependency-reduced-pom.xml
+
+sathish.conf

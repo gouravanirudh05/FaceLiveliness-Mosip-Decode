@@ -25,6 +25,7 @@ Clients. Liveness and PAD run before the face is captured, and the capture proce
 | `mosip-mock-services/` | Submodule `mosip/mosip-mock-services` `release-1.2.0.x`; **MockMDS** is MOSIP's mock L0 face device (SBI 0.9.5) |
 | `patches/<client>-face-liveness.patch` | The changes to each client. `setup.sh` applies them on a fresh clone; `scripts/make-patches.sh` regenerates them |
 | `scripts/` | `setup.sh`, `make-patches.sh`, `start-services.sh`, `stop-services.sh`, `run-webcam-device.sh`, `run-reg-client.sh`, `env.sh` |
+| `ANDROID_SETUP.md` | Step-by-step setup of the Android Registration Client on a phone with the mock backend (no MOSIP server) |
 | `../demo-client/` | Look-alike Registration Client that runs the client's own liveness code in all three flows without a MOSIP server (see below) |
 | `tools/mockmds_webcam_feeder.py` | Turns MockMDS into a live device by feeding it webcam frames |
 | `tools/perf_interop.py` | Performance and interoperability tests against the engine and the SBI device |

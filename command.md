@@ -97,23 +97,62 @@ conda run -n face-liveness-passive python face-liveness-passive/scripts/export_o
 
 ## 4. Android build
 
+**New to the Android client?** Follow `mosip/ANDROID_SETUP.md`: the full setup from scratch, including the phone,
+the device apps, the device keys and troubleshooting. This section is the short version.
+
+Needs Flutter 3.10.4 (installed at `~/flutter`), the Android SDK (`~/Android/Sdk`; Gradle installs missing
+platforms itself) and JDK 21. The app is Flutter, so Android Studio is optional: use it for the SDK Manager,
+emulators and debugging.
+
 ```bash
 export PATH=$HOME/flutter/bin:$PATH ANDROID_HOME=$HOME/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 cd mosip/android-registration-client
-flutter build apk --debug --no-multidex     # -> build/app/outputs/flutter-apk/app-debug.apk
+bash pigeon.sh                                # once: generates the Dart <-> Java bridge (lib/pigeon/, model/)
+flutter build apk --debug --no-multidex       # -> build/app/outputs/flutter-apk/app-debug.apk
 ```
 
 `--no-multidex` is fine because minSdk is 28, where multidex is native. Without the flag, Flutter stops at an
 interactive prompt. The Gradle heap is set to 4 GB in `android/gradle.properties`; the upstream 1.5 GB ran out
-of memory while dexing.
+of memory while dexing. Without `pigeon.sh`, the build fails with "Error when reading 'lib/pigeon/…'".
 
-**[not run yet]** The liveness models are not inside the APK. After installing it, provision them once; the
-app verifies their SHA-256 before use:
+### 4.1 Without a MOSIP server: the Android mock backend
+
+`mosip/patches/android-mock-backend.patch` (applied on top of the liveness patch) adds a mock backend, the Android
+counterpart of the desktop's `mock-backend.patch` (`-Dmosip.mock.backend=true`). When it is enabled at build time,
+`MockBackendInterceptor`, the first interceptor of the app's only HTTP client, answers every MOSIP server call
+inside the app:
+- login accepts any user and password, and returns a token with the officer and supervisor roles;
+- sync data (master data, configuration, user details, ID schema and UI specs, certificates, the applicant type
+  script) comes from MOSIP's published sample data, the same files as the desktop mock;
+- responses are encrypted with the phone's own key, as the server does for a registered machine, so the app's
+  normal sync code stores everything.
 
 ```bash
+cd mosip/android-registration-client
+git apply ../patches/android-mock-backend.patch                     # once
+ORG_GRADLE_PROJECT_mosipMockBackend=true flutter build apk --debug --no-multidex
+```
+
+The flag (`mosipMockBackend`, default `false`) can also be set in `android/gradle.properties`. When it is off,
+the app is unchanged and the sample data is not packaged.
+
+### 4.2 On the phone
+
+Android 9 or newer, with USB debugging enabled (Settings > About phone > tap Build number 7 times, then
+Developer options > USB debugging).
+
+```bash
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+# MOSIP's camera-based face device (SBI 0.9.5), the Android counterpart of MockMDS:
+#   https://github.com/mosip/android-camera-mds/releases (vDP1 camera-mds.zip, a zip inside a zip)
+adb install -r <camera-mds>/APKs/FaceRegSBI-v0.9.5.2.apk
+# liveness models (exported with: python face-liveness-passive/scripts/export_onnx.py; the app checks SHA-256):
 adb push face-liveness-passive/models/onnx/fsfm_unified.onnx face-liveness-passive/models/onnx/fsfm_fas.onnx \
     /sdcard/Android/data/io.mosip.registration_client/files/liveness-models/
 ```
+
+Open the Registration Client, log in with any user ID and password (mock backend), let the first sync finish,
+then onboard the operator and start a new registration; the face steps run the liveness check first.
 
 ## 5. Performance and interoperability  [not run yet]
 
@@ -129,36 +168,96 @@ The script measures:
 
 Results are to be written up in `docs/PERFORMANCE_INTEROP.md` (tracker T14).
 
-## 6. The real Registration Client UI  [not possible yet]
+## 6. The real Registration Client on MOSIP Collab  [login works; first sync blocked on Collab's side]
 
-On a fresh install the client needs a MOSIP server: it requires an online password login and an initial sync
-of the machine, users, configuration and certificates before any screen past login opens. Until a backend is
-available, the integration is exercised by `FaceLivenessGuardTest` with the real client classes (section 3).
+MOSIP Collab (`*.collab.mosip.net`) is MOSIP's hosted test environment. This machine is registered there with its
+TPM key; Collab sent the Registration Client credentials and a WireGuard VPN config. Run everything from the repo
+root.
 
-The plan is a minimal MOSIP 1.2.0.1 stack in Docker plus machine and user onboarding: tracker tasks T07–T10.
-It needs about 6 GB of free RAM. MOSIP Collab, or your own MOSIP 1.2.0 deployment, works too.
+### 6.1 Connect to the VPN
 
-Once a server exists:
-1. Set `mosip.hostname` in `registration-services/src/main/resources/props/mosip-application.properties`.
-2. Keep `start-services.sh` running.
-3. Run `io.mosip.registration.controller.Initialization` with:
+Use a phone hotspot or home Wi-Fi: the IIITB campus Wi-Fi blocks WireGuard (handshake never completes).
 
-```text
---module-path <javafx-sdk-11.0.2>/lib
---add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics
---add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED
+```bash
+sudo wg-quick up collab        # config installed at /etc/wireguard/collab.conf
+sudo wg show collab            # must show "latest handshake: … ago" and non-zero "received"
+curl -s -o /dev/null -w '%{http_code}\n' https://api-internal.collab.mosip.net/v1/syncdata/actuator/health   # expect 200
 ```
 
-The client uses the machine's TPM 2.0 when it can open `/dev/tpmrm0`. On Linux that needs the `tss` group:
-`sudo usermod -aG tss $USER`, then log in again or run `sg tss -c mosip/scripts/run-reg-client.sh`. Without TPM
-access it falls back to software keys in `registration-client/.mosipkeys/`. A server only accepts the key that
-was registered for the machine.
+If it says the interface already exists, run `sudo wg-quick down collab && sudo wg-quick up collab`. The VPN only
+routes Collab's private network (`172.31.0.0/16`); other traffic is unaffected. Logins go to the public
+`regclient-api.collab.mosip.net`; the sync's file downloads go to `api-internal.collab.mosip.net` and need the VPN.
+
+### 6.2 Start the liveness engine, MockMDS and the webcam
+
+```bash
+mosip/scripts/start-services.sh        # wait for "liveness service: up" and "MockMDS: up"
+mosip/scripts/run-webcam-device.sh     # separate terminal, keep running; without it MockMDS shows its sample photo
+```
+
+### 6.3 Start the Registration Client
+
+```bash
+~/mosip-latest/run-client.sh           # log copy: ~/mosip-latest/client.log
+```
+
+This is MOSIP's latest stable release (v1.2.0.2, the same build Collab's download page serves) with our liveness
+patch. It needs **Java 11**: the system `java` is 21, which fails with "Cannot load configuration class:
+io.mosip.registration.config.AppConfig". The launcher calls `/usr/lib/jvm/java-11-openjdk-amd64/bin/java`.
+
+### 6.4 In the client
+
+1. Log in with the Collab user (`sathish`; the password is in the Collab email).
+2. The initial sync runs; restart the client when it asks (run 6.3 again).
+3. Operator onboarding: the face capture runs the liveness check.
+4. New Registration: the face step runs the liveness check before capture.
+
+**Current status (26 Oct 2026):** login works, but the first sync stops with "Client settings / Master data Sync
+failed". Collab's server never answers
+`GET https://api-internal.collab.mosip.net/v1/syncdata/scripts/applicanttype.mvel?keyindex=…` (read time-out). The
+URL comes from Collab's own sync response and matches the syncdata endpoint; in syncdata 1.3.0 that call fetches the
+script from the config server and signs it via the key manager, so the hang is server-side. Collab's syncdata is
+1.3.0 while its download page serves client 1.2.0.2; we have asked Collab which client to use.
+
+### 6.5 Stop everything
+
+```bash
+pkill -f io.mosip.registration.controller.Initialization
+pkill -f mockmds_webcam_feeder
+mosip/scripts/stop-services.sh
+sudo wg-quick down collab
+```
+
+### 6.6 How `~/mosip-latest` was set up (to rebuild it)
+
+```bash
+git clone --depth 1 --branch v1.2.0.2 https://github.com/mosip/registration-client.git ~/mosip-latest/registration-client
+cd ~/mosip-latest/registration-client
+git checkout -b face-liveness && git apply <repo>/mosip/patches/registration-client-face-liveness.patch
+cd registration && JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64 \
+  mvn -o package -DskipTests -Dgpg.skip=true -pl registration-services,registration-client -am
+```
+
+- `~/mosip-latest/props/props/mosip-application.properties` overrides the built-in file of the same name (it is
+  first on the classpath). It is Collab's file from their download, with two changes:
+  - `environment=LOCAL`: `PRODUCTION` verifies MOSIP's signature on the jars, which a source build lacks.
+  - `mosip.reg.healthcheck.url` points at a URL that returns 200: Collab's own health URL answers 403, which the
+    client reads as "No Internet Connection".
+- `~/mosip-latest/extra-lib/` holds jars from Collab's package that a source build lacks: `mock-sdk.jar` (mock
+  biometric SDK; without it startup fails with "BIO_SDK_007 SDK provider registry is empty"), the ClamAV virus
+  scanner and ICU transliteration.
+- MOSIP's source default is `mosip.hostname=dev.mosip.net` (MOSIP's own dev server); the override replaces it with
+  `regclient-api.collab.mosip.net`. `mosip/scripts/run-reg-client.sh` does the same for the in-repo build with
+  `MOSIP_HOST=… MOSIP_HEALTHCHECK_URL=…`.
+- Linux notes, already handled: the client uses the TPM through the `tss` group
+  (`sudo usermod -aG tss $USER`, then log in again); our patch truncates host names longer than 32 characters in
+  the audit log (they made every login fail on Linux).
 
 ### Without a server: the demo client
 
 `demo-client/` runs the client's own liveness code in the login, onboarding, new registration, operator
-authentication and supervisor approval flows. No MOSIP server is involved; data goes to an embedded Derby database
-in `demo-client/data`. See `demo-client/README.md`.
+authentication and supervisor approval flows. No MOSIP server or VPN is involved; data goes to an embedded Derby
+database in `demo-client/data`. See `demo-client/README.md`.
 
 ```bash
 mosip/scripts/start-services.sh       # engine (50052) + MockMDS (4501)
