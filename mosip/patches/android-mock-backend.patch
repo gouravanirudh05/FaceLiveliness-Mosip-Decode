@@ -659,7 +659,7 @@ new file mode 100755
 index 0000000..8930840
 --- /dev/null
 +++ b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-global-config.properties
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,163 @@
 +# MOCK BACKEND client configuration (what the server's /v1/syncdata/configs would push).
 +# Base: the desktop mock-backend's mock-global-config.properties; Android-specific keys below use MOSIP's
 +# mosip-config release-1.2.0 defaults (languages limited to the sample UI spec's eng + fra).
@@ -820,6 +820,9 @@ index 0000000..8930840
 +mosip.registration.agegroup-config={"INFANT":"0-5","MINOR":"6-17","ADULT":"18-200"}
 +mosip.registration.machinecenterchanged=false
 +mosip.registration.reset_password_url=https://mock-backend.invalid/reset-password
++# Face liveness on the phone: eye-gaze challenges and nod need the head held within a few degrees, which a handheld
++# phone rarely manages, so only the clearly visible actions are asked for.
++mosip.registration.face.liveness.active.challenge.types=BLINK,SMILE,OPEN_MOUTH,TURN_LEFT,TURN_RIGHT,LOOK_UP,LOOK_DOWN
 diff --git a/android/clientmanager/src/mockBackend/assets/mock-backend/mock-id-schema.json b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-id-schema.json
 new file mode 100755
 index 0000000..25096e9

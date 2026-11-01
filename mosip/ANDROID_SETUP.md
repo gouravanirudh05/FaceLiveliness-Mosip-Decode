@@ -146,6 +146,9 @@ adb logcat -v time | grep -E 'MockBackend|flutter|MasterDataService|Biometrics'
   files as the desktop mock backend (`mock-backend.patch`). It is only packaged when the flag is on.
 - **Two Flutter-side checks** contact the server directly (health check and server version, in
   `network_service_impl.dart`). They are answered locally too.
+- **Liveness challenges**: the mock config limits the active challenges to blink, smile, open mouth and head
+  turns/tilts. The eye-gaze challenges and nod need the head held almost still, which rarely works with a handheld
+  phone.
 - **Device certificates**: in mock builds the device's signature is still verified, but the certificate chain is
   not (`Biometrics095Service`). No CA list is synced, and the test device apps use vendor test CAs.
 
