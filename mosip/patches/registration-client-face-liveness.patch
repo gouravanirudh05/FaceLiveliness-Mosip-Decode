@@ -1,5 +1,5 @@
 diff --git a/registration/registration-client/pom.xml b/registration/registration-client/pom.xml
-index 4e5fdd6..3b12fe1 100644
+index 4e5fdd6ec8..3b12fe1175 100644
 --- a/registration/registration-client/pom.xml
 +++ b/registration/registration-client/pom.xml
 @@ -28,6 +28,18 @@
@@ -22,7 +22,7 @@ index 4e5fdd6..3b12fe1 100644
  		<!--<dependency>
  			<groupId>org.apache.httpcomponents</groupId>
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java
-index 113de5c..125c8a6 100644
+index 113de5ce22..125c8a683a 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/AuthenticationController.java
 @@ -28,7 +28,12 @@ import io.mosip.registration.context.ApplicationContext;
@@ -86,7 +86,7 @@ index 113de5c..125c8a6 100644
  			}
  		});
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java
-index bc67587..c1a432b 100644
+index bc67587fc7..c1a432bae1 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/auth/LoginController.java
 @@ -35,7 +35,12 @@ import io.mosip.registration.context.SessionContext;
@@ -153,10 +153,10 @@ index bc67587..c1a432b 100644
  				progressIndicator.setVisible(false);
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/FaceLivenessGuard.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/FaceLivenessGuard.java
 new file mode 100644
-index 0000000..93f7ca3
+index 0000000000..df1f8d5ce2
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/FaceLivenessGuard.java
-@@ -0,0 +1,756 @@
+@@ -0,0 +1,829 @@
 +package io.mosip.registration.controller.device;
 +
 +import java.time.Duration;
@@ -167,6 +167,7 @@ index 0000000..93f7ca3
 +import java.util.List;
 +import java.util.Map;
 +import java.util.Objects;
++import java.util.Set;
 +import java.util.concurrent.ConcurrentHashMap;
 +import java.util.concurrent.Executors;
 +import java.util.concurrent.ScheduledExecutorService;
@@ -212,6 +213,11 @@ index 0000000..93f7ca3
 + * the passive confidence does not meet the threshold. The capture may only proceed when the verdict allows it.
 + * The engine runs on this machine (127.0.0.1), so liveness is enforced offline as well as online.
 + *
++ * <p>Attempts: for resident registration the attempt limit is MOSIP's own
++ * ({@code mosip.registration.num_of_face_retries}, enforced by the biometrics screen): every session that fails or
++ * times out is one capture attempt there, so {@code repeated.failure.*} is not used for residents. For operator and
++ * supervisor authentication, which have no MOSIP attempt counter, {@code repeated.failure.*} still applies.
++ *
 + * <p>Configuration: Registration Client global parameters (synced from the server when online, used offline),
 + * with {@code -D} system properties as a machine-local fallback. A per-workflow key
 + * ({@code ...liveness.resident.<key>}, {@code operator}, {@code supervisor}) wins over the shared key
@@ -229,8 +235,8 @@ index 0000000..93f7ca3
 + * mosip.registration.face.liveness.[wf.]active.compound.challenges Y | N
 + * mosip.registration.face.liveness.[wf.]active.challenge.timeout.seconds comma list per step, last repeats
 + * mosip.registration.face.liveness.[wf.]active.max.retries        integer >= 0 (retries within one session)
-+ * mosip.registration.face.liveness.[wf.]repeated.failure.max.sessions integer >= 1 (default 3)
-+ * mosip.registration.face.liveness.[wf.]repeated.failure.action   BLOCK | CONTINUE (default BLOCK)
++ * mosip.registration.face.liveness.[wf.]repeated.failure.max.sessions integer >= 1 (default 3; operator/supervisor only)
++ * mosip.registration.face.liveness.[wf.]repeated.failure.action   BLOCK | CONTINUE (default BLOCK; operator/supervisor only)
 + * mosip.registration.face.liveness.engine.error.policy            DENY | ALLOW (default DENY)
 + * mosip.registration.face.liveness.service.host / .port           default 127.0.0.1 / 50052
 + * mosip.registration.face.liveness.service.autostart              Y | N  (default Y)
@@ -285,13 +291,20 @@ index 0000000..93f7ca3
 +		private final String userMessage;
 +		private final LivenessOutcome outcome;
 +		private final boolean deviceError;
++		private final boolean systemFault;
 +
 +		Verdict(boolean allowed, boolean skipped, boolean blocked, String userMessage, LivenessOutcome outcome) {
-+			this(allowed, skipped, blocked, userMessage, outcome, false);
++			this(allowed, skipped, blocked, userMessage, outcome, false, false);
 +		}
 +
 +		Verdict(boolean allowed, boolean skipped, boolean blocked, String userMessage, LivenessOutcome outcome,
 +				boolean deviceError) {
++			this(allowed, skipped, blocked, userMessage, outcome, deviceError, false);
++		}
++
++		Verdict(boolean allowed, boolean skipped, boolean blocked, String userMessage, LivenessOutcome outcome,
++				boolean deviceError, boolean systemFault) {
++			this.systemFault = systemFault;
 +			this.deviceError = deviceError;
 +			this.allowed = allowed;
 +			this.skipped = skipped;
@@ -327,20 +340,50 @@ index 0000000..93f7ca3
 +		public LivenessOutcome getOutcome() {
 +			return outcome;
 +		}
++
++		/** A liveness session actually ran and the engine passed the subject (not skipped, not an engine-error allowance). */
++		public boolean isVerified() {
++			return allowed && !skipped && outcome != null && outcome.getStatus() == LivenessOutcome.Status.PASSED;
++		}
++
++		/**
++		 * A session ran and the subject failed it (failed, PAD, timed out). This is what counts as one failed capture
++		 * attempt: device errors, engine/configuration faults, refused (blocked) requests and cancellations do not.
++		 */
++		public boolean isFailedSession() {
++			return !allowed && !skipped && !blocked && !deviceError && !systemFault && (outcome == null
++					|| outcome.getStatus() == LivenessOutcome.Status.FAILED
++					|| outcome.getStatus() == LivenessOutcome.Status.TIMED_OUT);
++		}
 +	}
 +
 +	/** Thrown from capture tasks when liveness does not allow the capture; carries the user-facing text. */
 +	public static class LivenessRejectedException extends RegBaseCheckedException {
 +		private static final long serialVersionUID = 1L;
 +		private final String userMessage;
++		private final boolean countsAsAttempt;
 +
 +		public LivenessRejectedException(String userMessage) {
++			this(userMessage, false);
++		}
++
++		/**
++		 * @param countsAsAttempt the subject failed a liveness session, so the rejection is one failed capture attempt
++		 *                        (see {@link Verdict#isFailedSession()})
++		 */
++		public LivenessRejectedException(String userMessage, boolean countsAsAttempt) {
 +			super(LIVENESS_ERROR_CODE, userMessage);
 +			this.userMessage = userMessage;
++			this.countsAsAttempt = countsAsAttempt;
 +		}
 +
 +		public String getUserMessage() {
 +			return userMessage;
++		}
++
++		/** Whether this rejection is one failed capture attempt to be counted by the biometrics screen. */
++		public boolean countsAsAttempt() {
++			return countsAsAttempt;
 +		}
 +	}
 +
@@ -357,6 +400,8 @@ index 0000000..93f7ca3
 +	private final LivenessEngineManager engine = new LivenessEngineManager();
 +	private final LivenessMetrics metrics = new LivenessMetrics();
 +	private final Map<String, AtomicInteger> failures = new ConcurrentHashMap<>();
++	/** Captures (registration, field, MOSIP attempt number) that were accepted after a passed liveness session. */
++	private final Set<String> verifiedCaptures = ConcurrentHashMap.newKeySet();
 +	private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(r -> {
 +		Thread t = new Thread(r, "face-liveness-device-watchdog");
 +		t.setDaemon(true);
@@ -414,7 +459,7 @@ index 0000000..93f7ca3
 +		} catch (IllegalArgumentException e) {
 +			LOGGER.error("Face liveness configuration is invalid: {}", e.getMessage());
 +			audit(AuditEvent.REG_FACE_LIVENESS_ENGINE_ERROR, workflow, subjectId);
-+			return new Verdict(false, false, false, LivenessOutcome.GENERIC_FAILURE_MESSAGE, null);
++			return new Verdict(false, false, false, LivenessOutcome.GENERIC_FAILURE_MESSAGE, null, false, true);
 +		}
 +
 +		FaceLivenessClient livenessClient = client();
@@ -517,6 +562,28 @@ index 0000000..93f7ca3
 +		}
 +	}
 +
++	/**
++	 * Records that the capture stored as MOSIP attempt {@code attempt} of {@code fieldId} was accepted after a passed
++	 * liveness session, so the biometrics screen can keep showing the "verified" mark for that attempt.
++	 */
++	public void markVerified(String subjectId, String fieldId, int attempt) {
++		verifiedCaptures.add(verifiedKey(subjectId, fieldId, attempt));
++	}
++
++	/** Whether that capture attempt was accepted after a passed liveness session. */
++	public boolean isVerified(String subjectId, String fieldId, int attempt) {
++		return verifiedCaptures.contains(verifiedKey(subjectId, fieldId, attempt));
++	}
++
++	private static String verifiedKey(String subjectId, String fieldId, int attempt) {
++		return (subjectId == null ? "" : subjectId) + "|" + fieldId + "|" + attempt;
++	}
++
++	/** Resident attempts are counted by MOSIP's own biometrics attempt counter, not by this guard. */
++	static boolean mosipManagesAttempts(LivenessWorkflow workflow) {
++		return workflow == LivenessWorkflow.RESIDENT_REGISTRATION;
++	}
++
 +	/** Anonymised liveness metrics per workflow (diagnostics). */
 +	public Map<String, Map<String, Object>> getMetrics() {
 +		return metrics.snapshot();
@@ -597,9 +664,10 @@ index 0000000..93f7ca3
 +					text = "threshold " + orDefault(p.getAcceptThreshold()) + ", reject " + orDefault(p.getRejectThreshold())
 +							+ ", active " + orDefault(p.getActiveEnabled()) + ", min challenges " + orDefault(p.getMinChallenges())
 +							+ ", challenges " + (p.getChallengeTypes().isEmpty() ? "engine default" : p.getChallengeTypes())
-+							+ ", max retries " + orDefault(p.getMaxRetries()) + ", on repeated failure "
-+							+ wfValueOr(workflowKey(wf), "repeated.failure.action", "BLOCK") + " after "
-+							+ maxFailedSessions(wf);
++							+ ", max retries " + orDefault(p.getMaxRetries()) + (mosipManagesAttempts(wf)
++									? ", attempts limited by mosip.registration.num_of_face_retries"
++									: ", on repeated failure " + wfValueOr(workflowKey(wf), "repeated.failure.action", "BLOCK")
++											+ " after " + maxFailedSessions(wf));
 +				} catch (IllegalArgumentException e) {
 +					text = "INVALID configuration: " + e.getMessage();
 +				}
@@ -704,6 +772,9 @@ index 0000000..93f7ca3
 +	}
 +
 +	private boolean isBlocked(LivenessWorkflow workflow, String key) {
++		if (mosipManagesAttempts(workflow)) {
++			return false;
++		}
 +		if (!"BLOCK".equalsIgnoreCase(wfValueOr(workflowKey(workflow), "repeated.failure.action", "BLOCK"))) {
 +			return false;
 +		}
@@ -716,15 +787,17 @@ index 0000000..93f7ca3
 +		return n == null || n < 1 ? 3 : n;
 +	}
 +
-+	/** Failed / timed-out sessions count; a pass resets; cancellations and engine errors do not count. */
++	/**
++	 * Failed / timed-out sessions count; a pass resets; cancellations, device and engine errors do not count.
++	 * Not used for residents: their attempts are MOSIP's capture attempts (see {@link #mosipManagesAttempts}).
++	 */
 +	private void trackFailures(LivenessWorkflow workflow, String key, Verdict verdict) {
-+		LivenessOutcome o = verdict.getOutcome();
++		if (mosipManagesAttempts(workflow)) {
++			return;
++		}
 +		if (verdict.isAllowed()) {
 +			failures.remove(key);
-+		} else if (verdict.isDeviceError()) {
-+			return;
-+		} else if (o == null || o.getStatus() == LivenessOutcome.Status.FAILED
-+				|| o.getStatus() == LivenessOutcome.Status.TIMED_OUT) {
++		} else if (verdict.isFailedSession()) {
 +			int n = failures.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
 +			LOGGER.info("Face liveness: {} failed session(s) of {} allowed for {}", n, maxFailedSessions(workflow),
 +					workflow);
@@ -914,7 +987,7 @@ index 0000000..93f7ca3
 +	}
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java
-index c810563..50815b1 100644
+index c81056367d..36202b6f18 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/GenericBiometricsController.java
 @@ -17,6 +17,7 @@ import org.springframework.context.annotation.Scope;
@@ -925,7 +998,7 @@ index c810563..50815b1 100644
  import io.mosip.biometrics.util.face.FaceDecoder;
  import io.mosip.biometrics.util.finger.FingerDecoder;
  import io.mosip.biometrics.util.iris.IrisDecoder;
-@@ -155,6 +156,13 @@ public class GenericBiometricsController extends BaseController {
+@@ -155,6 +156,16 @@ public class GenericBiometricsController extends BaseController {
  	@Autowired
  	private Streamer streamer;
  
@@ -936,43 +1009,159 @@ index c810563..50815b1 100644
 +	@FXML
 +	private LivenessOverlayPane livenessOverlay;
 +
++	/** The face capture in flight was preceded by a passed liveness session (set off the FX thread). */
++	private volatile boolean livenessVerifiedCapture;
++
  	@FXML
  	private Label registrationNavlabel;
  
-@@ -562,6 +570,15 @@ public class GenericBiometricsController extends BaseController {
+@@ -241,6 +252,10 @@ public class GenericBiometricsController extends BaseController {
+ 				RegistrationConstants.LABELS);
+ 		setImage(scanImageView	, RegistrationConstants.SCAN_IMG);
+ 		setImage(closeButtonImageView	, RegistrationConstants.CLOSE_IMG);
++		if (livenessOverlay != null) {
++			// keep "face verified" visible until the (signed) face capture that follows has finished
++			livenessOverlay.setHoldOnSuccess(true);
++		}
+ 	}
+ 
+ 	public boolean isBiometricExceptionProofCollected(String fieldId) {
+@@ -562,6 +577,22 @@ public class GenericBiometricsController extends BaseController {
  					protected List<BiometricsDto> call() throws RegBaseCheckedException, IOException {
  
  						LOGGER.info("Capture request started {}", System.currentTimeMillis());
++						livenessVerifiedCapture = false;
 +						if (isFace(currentModality)) {
++							if (livenessOverlay != null) {
++								livenessOverlay.showVerified(false);
++							}
 +							// Face liveness / PAD on the device stream before the face is captured.
 +							FaceLivenessGuard.Verdict verdict = faceLivenessGuard.verify(
 +									LivenessWorkflow.RESIDENT_REGISTRATION, livenessOverlay, null,
 +									getRegistrationDTOFromSession().getAppId());
 +							if (!verdict.isAllowed()) {
-+								throw new FaceLivenessGuard.LivenessRejectedException(verdict.getUserMessage());
++								// a session the resident failed is one capture attempt, like a poor quality capture
++								throw new FaceLivenessGuard.LivenessRejectedException(verdict.getUserMessage(),
++										verdict.isFailedSession());
 +							}
++							livenessVerifiedCapture = verdict.isVerified();
 +						}
  						return rCapture(fxControl.getUiSchemaDTO().getId(), currentModality);
  
  					}
-@@ -574,7 +591,13 @@ public class GenericBiometricsController extends BaseController {
+@@ -574,7 +605,20 @@ public class GenericBiometricsController extends BaseController {
  			@Override
  			public void handle(WorkerStateEvent t) {
  				LOGGER.debug("RCapture task failed");
 -				generateAlert(RegistrationConstants.ERROR, RegistrationUIConstants.getMessageLanguageSpecific(RegistrationUIConstants.BIOMETRIC_SCANNING_ERROR));
 +				Throwable failure = rCaptureTaskService.getException();
 +				if (failure instanceof FaceLivenessGuard.LivenessRejectedException) {
-+					generateAlert(RegistrationConstants.ERROR,
-+							((FaceLivenessGuard.LivenessRejectedException) failure).getUserMessage());
++					FaceLivenessGuard.LivenessRejectedException rejected = (FaceLivenessGuard.LivenessRejectedException) failure;
++					String message = rejected.getUserMessage();
++					if (rejected.countsAsAttempt()) {
++						message = registerFailedLivenessAttempt(message);
++					}
++					generateAlert(RegistrationConstants.ERROR, message);
 +				} else {
++					// e.g. the face capture failed after liveness passed: do not leave "face verified" showing
++					endLivenessSession();
 +					generateAlert(RegistrationConstants.ERROR, RegistrationUIConstants.getMessageLanguageSpecific(RegistrationUIConstants.BIOMETRIC_SCANNING_ERROR));
 +				}
++				refreshLivenessBadge();
  
  				LOGGER.debug("Enabling LogOut");
  				// Enable Auto-Logout
+@@ -618,6 +662,11 @@ public class GenericBiometricsController extends BaseController {
+ 
+ 					getRegistrationDTOFromSession().ATTEMPTS.put(String.format("%s_%s", fxControl.getUiSchemaDTO().getId(), currentModality),
+ 							getRegistrationDTOFromSession().ATTEMPTS.getOrDefault(String.format("%s_%s", fxControl.getUiSchemaDTO().getId(), currentModality), 0) + 1);
++					if (isFace(currentModality) && livenessVerifiedCapture) {
++						faceLivenessGuard.markVerified(getRegistrationDTOFromSession().getAppId(),
++								fxControl.getUiSchemaDTO().getId(), getRegistrationDTOFromSession().ATTEMPTS
++										.get(String.format("%s_%s", fxControl.getUiSchemaDTO().getId(), currentModality)));
++					}
+ 					List<String> exceptionBioAttributes = getSelectedExceptionsByBioType();
+ 					Map<String, BiometricsDto> biometricsMap = new LinkedHashMap<>();
+ 					for (BiometricsDto biometricsDto : mdsCapturedBiometricsList) {
+@@ -642,6 +691,8 @@ public class GenericBiometricsController extends BaseController {
+ 					LOGGER.error("Exception while getting the scanned biometrics for user registration",e);
+ 					generateAlert(RegistrationConstants.ERROR, RegistrationUIConstants.getMessageLanguageSpecific(RegistrationUIConstants.BIOMETRIC_SCANNING_ERROR));
+ 				} finally {
++					endLivenessSession();
++					refreshLivenessBadge();	// also covers the early returns above (invalid capture, local dedup)
+ 					SessionContext.setAutoLogout(true);	// Enable Auto-Logout
+ 					streamer.setUrlStream(null);
+ 
+@@ -652,6 +703,50 @@ public class GenericBiometricsController extends BaseController {
+ 		LOGGER.info("Scan process ended for capturing biometrics");
+ 	}
+ 
++	/**
++	 * A liveness session the resident failed is one capture attempt: it counts against MOSIP's
++	 * {@code num_of_face_retries} exactly like a capture below the quality threshold, shows in the attempts box and
++	 * disables the scan button when the last attempt is used. Returns the text to alert, which says so when no
++	 * attempt is left.
++	 */
++	private String registerFailedLivenessAttempt(String message) {
++		String fieldId = fxControl.getUiSchemaDTO().getId();
++		String attemptsKey = String.format("%s_%s", fieldId, currentModality);
++		int attempts = getRegistrationDTOFromSession().ATTEMPTS.getOrDefault(attemptsKey, 0) + 1;
++		getRegistrationDTOFromSession().ATTEMPTS.put(attemptsKey, attempts);
++		int allowed = bioService.getRetryCount(currentModality);
++		LOGGER.info("Face liveness failed: counted as capture attempt {} of {}", attempts, allowed);
++		try {
++			displayBiometric(currentModality);	// refreshes the attempts box and the scan button
++		} catch (RuntimeException e) {
++			LOGGER.error("Unable to refresh the attempts after a failed face liveness", e);
++		}
++		return allowed > 0 && attempts >= allowed ? message + "\n" + FaceLivenessGuard.RECOVERY_MESSAGE : message;
++	}
++
++	private void endLivenessSession() {
++		if (livenessOverlay != null) {
++			livenessOverlay.endSession();
++		}
++	}
++
++	/** Shows or hides the "Liveness verified" mark for the attempt currently on display. */
++	private void refreshLivenessBadge() {
++		if (getRegistrationDTOFromSession() != null && fxControl != null) {
++			updateLivenessBadge(currentModality, getRegistrationDTOFromSession().ATTEMPTS.getOrDefault(
++					String.format("%s_%s", fxControl.getUiSchemaDTO().getId(), currentModality), 0));
++		}
++	}
++
++	/** Shows the "Liveness verified" mark when the attempt on display was accepted after a passed liveness session. */
++	private void updateLivenessBadge(Modality modality, int attempt) {
++		if (livenessOverlay != null) {
++			livenessOverlay.showVerified(isFace(modality) && attempt > 0 && getRegistrationDTOFromSession() != null
++					&& faceLivenessGuard.isVerified(getRegistrationDTOFromSession().getAppId(),
++							fxControl.getUiSchemaDTO().getId(), attempt));
++		}
++	}
++
+ 	//TODO - onMissing attribute , pls use default image / blank image
+ 	private void addStreamImageAndScoreToCache(String fieldId, Modality modalityName, Collection<BiometricsDto> biometricsDtos, int retry) throws Exception {
+ 		try {
+@@ -811,6 +906,7 @@ public class GenericBiometricsController extends BaseController {
+ 
+ 		// Get the stream image from Bio ServiceImpl and load it in the image pane
+ 		biometricImage.setImage(getBioStreamImage(fieldId, modality, retry));
++		updateLivenessBadge(modality, retry);
+ 	}
+ 
+ 
+@@ -943,6 +1039,7 @@ public class GenericBiometricsController extends BaseController {
+ 					updateByAttempt(qualityScoreVal, getBioStreamImage(fxControl.getUiSchemaDTO().getId(), currentModality, attempt),
+ 							bioService.getMDMQualityThreshold(currentModality), biometricImage,
+ 							qualityText, bioProgress);
++					updateLivenessBadge(currentModality, attempt);
+ 					//}
+ 
+ 					LOGGER.info("Mouse Event by attempt Ended. modality : {}", currentModality);
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessEngineManager.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessEngineManager.java
 new file mode 100644
-index 0000000..49cced1
+index 0000000000..49cced144f
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessEngineManager.java
 @@ -0,0 +1,103 @@
@@ -1081,7 +1270,7 @@ index 0000000..49cced1
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessMetrics.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessMetrics.java
 new file mode 100644
-index 0000000..c3869a0
+index 0000000000..c3869a094c
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessMetrics.java
 @@ -0,0 +1,106 @@
@@ -1193,11 +1382,14 @@ index 0000000..c3869a0
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessOverlayPane.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessOverlayPane.java
 new file mode 100644
-index 0000000..ae81d58
+index 0000000000..bafb62c7b7
 --- /dev/null
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/LivenessOverlayPane.java
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,320 @@
 +package io.mosip.registration.controller.device;
++
++import java.io.IOException;
++import java.io.InputStream;
 +
 +import io.mosip.extensions.liveness.client.LivenessUpdate;
 +import javafx.animation.PauseTransition;
@@ -1206,6 +1398,9 @@ index 0000000..ae81d58
 +import javafx.geometry.Pos;
 +import javafx.scene.control.Label;
 +import javafx.scene.control.ProgressBar;
++import javafx.scene.image.Image;
++import javafx.scene.image.ImageView;
++import javafx.scene.layout.HBox;
 +import javafx.scene.layout.StackPane;
 +import javafx.scene.layout.VBox;
 +import javafx.scene.paint.Color;
@@ -1214,29 +1409,53 @@ index 0000000..ae81d58
 +
 +/**
 + * Face liveness feedback drawn over the live face preview (spec 10.1-10.7): a positioning oval, the liveness
-+ * status ("Checking face liveness…", the challenge prompt, "Action detected", retry guidance, the result), and a
-+ * progress bar.
++ * status ("Checking face liveness…", the challenge prompt, "Action detected", retry guidance, the result with a
++ * tick or cross), and a progress bar.
 + *
 + * <p>Declared in the face capture / authentication FXML in the same cell (or bounds) as the preview ImageView, so
-+ * it overlays the stream. Hidden while no liveness session runs; never intercepts mouse events. All public methods
-+ * may be called from any thread.
++ * it overlays the stream. The session feedback is hidden while no liveness session runs; the pane never
++ * intercepts mouse events. All public methods may be called from any thread.
++ *
++ * <p>Two optional behaviours for the biometrics screen:
++ * <ul>
++ * <li>{@link #setHoldOnSuccess(boolean)}: keep the "verified" result on screen after a passed session until the
++ * caller ends it with {@link #endSession()} (i.e. until the face capture that follows has finished), instead of
++ * hiding it after a short pause.</li>
++ * <li>{@link #showVerified(boolean)}: a small, persistent "Liveness verified" badge in the corner of the preview,
++ * shown while a face capture accepted after a passed session is displayed.</li>
++ * </ul>
 + */
 +public class LivenessOverlayPane extends StackPane {
 +
 +	private static final String BAND_STYLE = "-fx-background-color: rgba(0,0,0,0.72); -fx-background-radius: 6;";
 +	private static final String STATUS_STYLE = "-fx-text-fill: white; -fx-font-size: 16px; -fx-font-weight: bold;";
 +	private static final String GUIDANCE_STYLE = "-fx-text-fill: #ffd54f; -fx-font-size: 13px;";
++	private static final String BADGE_STYLE = "-fx-background-color: rgba(0,0,0,0.65); -fx-background-radius: 12;";
++	private static final String BADGE_TEXT_STYLE = "-fx-text-fill: white; -fx-font-size: 12px; -fx-font-weight: bold;";
++
++	/** The client's existing completion images (same ones MOSIP uses next to a captured modality). */
++	private static final String TICK_IMAGE = "/images/tick-circle.png";
++	private static final String CROSS_IMAGE = "/images/cross-mark.png";
++
++	static final String VERIFIED_TEXT = "Face verified";
++	static final String BADGE_LABEL = "Liveness verified";
 +
 +	private final Ellipse guide = new Ellipse();
 +	private final Label status = new Label();
 +	private final Label guidance = new Label();
 +	private final ProgressBar progress = new ProgressBar(0);
++	private final VBox band;
++	private final HBox badge;
++	private final Image tickImage = loadImage(TICK_IMAGE);
++	private final Image crossImage = loadImage(CROSS_IMAGE);
 +	private String currentPrompt = "";
++	private volatile boolean holdOnSuccess;
++	/** The pending "hide the result" timer; JavaFX thread only. */
++	private PauseTransition hidePause;
 +
 +	public LivenessOverlayPane() {
 +		setMouseTransparent(true);
 +		setPickOnBounds(false);
-+		setVisible(false);
 +		setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
 +
 +		guide.setFill(Color.TRANSPARENT);
@@ -1251,28 +1470,63 @@ index 0000000..ae81d58
 +
 +		status.setStyle(STATUS_STYLE);
 +		status.setWrapText(true);
++		status.setGraphicTextGap(8);
 +		guidance.setStyle(GUIDANCE_STYLE);
 +		guidance.setWrapText(true);
 +		progress.setMaxWidth(Double.MAX_VALUE);
-+		VBox band = new VBox(4, status, guidance, progress);
++		band = new VBox(4, status, guidance, progress);
 +		band.setPadding(new Insets(6, 10, 6, 10));
 +		band.setStyle(BAND_STYLE);
 +		band.setMaxHeight(USE_PREF_SIZE);
 +		StackPane.setAlignment(band, Pos.BOTTOM_CENTER);
 +		StackPane.setMargin(band, new Insets(4));
 +
-+		getChildren().addAll(guide, band);
++		Label badgeText = new Label(BADGE_LABEL);
++		badgeText.setStyle(BADGE_TEXT_STYLE);
++		badge = new HBox(6);
++		badge.setAlignment(Pos.CENTER_LEFT);
++		badge.setPadding(new Insets(3, 10, 3, 6));
++		badge.setStyle(BADGE_STYLE);
++		badge.setMaxSize(USE_PREF_SIZE, USE_PREF_SIZE);
++		ImageView badgeIcon = icon(tickImage, 18);
++		if (badgeIcon != null) {
++			badge.getChildren().add(badgeIcon);
++		} else {
++			badgeText.setText("\u2714 " + BADGE_LABEL);
++		}
++		badge.getChildren().add(badgeText);
++		StackPane.setAlignment(badge, Pos.TOP_RIGHT);
++		StackPane.setMargin(badge, new Insets(4));
++
++		guide.setVisible(false);
++		band.setVisible(false);
++		badge.setVisible(false);
++		getChildren().addAll(guide, band, badge);
++	}
++
++	/**
++	 * After a passed session, keep the result on screen until {@link #endSession()} is called (the caller is still
++	 * capturing the face) instead of hiding it after a short pause. Off by default.
++	 */
++	public void setHoldOnSuccess(boolean hold) {
++		this.holdOnSuccess = hold;
++	}
++
++	public boolean isHoldOnSuccess() {
++		return holdOnSuccess;
 +	}
 +
 +	/** Shows the overlay in its initial passive-check state. */
 +	public void start(String text) {
 +		fx(() -> {
++			cancelPause();
 +			currentPrompt = "";
 +			guide.setStroke(Color.web("#ffffffcc"));
++			status.setGraphic(null);
 +			status.setText(text);
 +			guidance.setText("");
 +			progress.setProgress(0);
-+			setVisible(true);
++			showSession(true);
 +		});
 +	}
 +
@@ -1283,22 +1537,51 @@ index 0000000..ae81d58
 +		fx(() -> apply(update));
 +	}
 +
-+	/** Shows the final message (green when passed, red otherwise), then hides after a short pause. */
++	/**
++	 * Shows the final message with a tick (green) when passed or a cross (red) otherwise. Hides after a short pause,
++	 * except after a pass when {@link #setHoldOnSuccess(boolean)} is on: then it stays until {@link #endSession()}.
++	 */
 +	public void finish(String text, boolean passed) {
 +		fx(() -> {
++			cancelPause();
 +			guide.setStroke(passed ? Color.web("#66bb6a") : Color.web("#ef5350"));
-+			status.setText(text == null ? "" : text);
++			String shown = text == null ? "" : text;
++			if (passed && shown.isEmpty()) {
++				shown = VERIFIED_TEXT;
++			}
++			showResult(shown, passed);
 +			guidance.setText("");
 +			progress.setProgress(passed ? 1 : 0);
-+			setVisible(true);
-+			PauseTransition pause = new PauseTransition(Duration.seconds(passed ? 1.5 : 3));
-+			pause.setOnFinished(e -> setVisible(false));
-+			pause.play();
++			showSession(true);
++			if (passed && holdOnSuccess) {
++				return;
++			}
++			hidePause = new PauseTransition(Duration.seconds(passed ? 1.5 : 3));
++			hidePause.setOnFinished(e -> showSession(false));
++			hidePause.play();
 +		});
 +	}
 +
++	/** Hides the session feedback (oval, status, progress); the "verified" badge is not affected. */
++	public void endSession() {
++		fx(() -> {
++			cancelPause();
++			showSession(false);
++		});
++	}
++
++	/** Shows or hides the persistent "Liveness verified" badge in the corner of the preview. */
++	public void showVerified(boolean verified) {
++		fx(() -> badge.setVisible(verified));
++	}
++
++	/** Hides everything: the session feedback and the badge. */
 +	public void hide() {
-+		fx(() -> setVisible(false));
++		fx(() -> {
++			cancelPause();
++			showSession(false);
++			badge.setVisible(false);
++		});
 +	}
 +
 +	String getStatusText() {
@@ -1309,8 +1592,42 @@ index 0000000..ae81d58
 +		return guidance.getText();
 +	}
 +
++	/** JavaFX thread only. */
++	boolean isSessionShown() {
++		return band.isVisible();
++	}
++
++	/** JavaFX thread only. */
++	boolean isVerifiedShown() {
++		return badge.isVisible();
++	}
++
++	private void showSession(boolean visible) {
++		guide.setVisible(visible);
++		band.setVisible(visible);
++	}
++
++	private void cancelPause() {
++		if (hidePause != null) {
++			hidePause.stop();
++			hidePause = null;
++		}
++	}
++
++	private void showResult(String text, boolean passed) {
++		ImageView icon = icon(passed ? tickImage : crossImage, 26);
++		if (icon != null) {
++			status.setGraphic(icon);
++			status.setText(text);
++		} else {
++			status.setGraphic(null);
++			status.setText((passed ? "\u2714 " : "\u2716 ") + text);
++		}
++	}
++
 +	private void apply(LivenessUpdate update) {
-+		setVisible(true);
++		showSession(true);
++		status.setGraphic(null);
 +		switch (update.getKind()) {
 +		case CHECKING:
 +			status.setText(update.getText());
@@ -1361,6 +1678,26 @@ index 0000000..ae81d58
 +				+ (retriesRemaining == 0 ? " (last attempt)." : " (" + retriesRemaining + " more after this).");
 +	}
 +
++	private static ImageView icon(Image image, double size) {
++		if (image == null) {
++			return null;
++		}
++		ImageView view = new ImageView(image);
++		view.setFitWidth(size);
++		view.setFitHeight(size);
++		view.setPreserveRatio(true);
++		return view;
++	}
++
++	/** The image from the client's resources, or null when it is not there (a text mark is used instead). */
++	private static Image loadImage(String path) {
++		try (InputStream in = LivenessOverlayPane.class.getResourceAsStream(path)) {
++			return in == null ? null : new Image(in);
++		} catch (IOException | RuntimeException e) {
++			return null;
++		}
++	}
++
 +	private static void fx(Runnable r) {
 +		if (Platform.isFxApplicationThread()) {
 +			r.run();
@@ -1370,7 +1707,7 @@ index 0000000..ae81d58
 +	}
 +}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
-index 105567a..ec9b3ac 100644
+index 105567a999..ec9b3ac417 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/device/Streamer.java
 @@ -1,15 +1,20 @@
@@ -1529,7 +1866,7 @@ index 105567a..ec9b3ac 100644
  				LOGGER.error("Failed to close the stream thread", e);
  			}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java
-index 232c791..00adf02 100644
+index 232c7912d6..00adf0277e 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/eodapproval/EODAuthenticationController.java
 @@ -25,7 +25,12 @@ import io.mosip.registration.constants.RegistrationUIConstants;
@@ -1594,7 +1931,7 @@ index 232c791..00adf02 100644
  
  			}
 diff --git a/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java b/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java
-index d11eac2..4c95624 100644
+index d11eac2011..4c95624ece 100644
 --- a/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java
 +++ b/registration/registration-client/src/main/java/io/mosip/registration/controller/settings/impl/DeviceSettingsController.java
 @@ -20,6 +20,7 @@ import io.mosip.registration.constants.RegistrationUIConstants;
@@ -1700,7 +2037,7 @@ index d11eac2..4c95624 100644
  
  	private GridPane createDevicePane(String type, String key, List<MdmBioDevice> bioDevices,
 diff --git a/registration/registration-client/src/main/resources/fxml/Authentication.fxml b/registration/registration-client/src/main/resources/fxml/Authentication.fxml
-index d6c516f..29aae33 100644
+index d6c516f048..29aae33ba3 100644
 --- a/registration/registration-client/src/main/resources/fxml/Authentication.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/Authentication.fxml
 @@ -1,6 +1,7 @@
@@ -1721,7 +2058,7 @@ index d6c516f..29aae33 100644
                                            </GridPane>
                                            <TextField fx:id="faceUserId" promptText="%username" styleClass="authenticationStyle" />
 diff --git a/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml b/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml
-index 08bef3b92d4320b33d9628c57f57b89d84c919cb..9e8120674c3682afa6bdaba907e74d15c64207c9 100644
+index 08bef3b92d..9e8120674c 100644
 --- a/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/BiometricsCapture.fxml
 @@ -10,6 +10,7 @@
@@ -1742,7 +2079,7 @@ index 08bef3b92d4320b33d9628c57f57b89d84c919cb..9e8120674c3682afa6bdaba907e74d15
                                              <columnConstraints>
                                                  <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" percentWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml b/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
-index e768a55..75a8be0 100644
+index e768a5579d..75a8be0633 100644
 --- a/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/GenericBiometricFXML.fxml
 @@ -1,6 +1,7 @@
@@ -1763,7 +2100,7 @@ index e768a55..75a8be0 100644
                                                           <columnConstraints>
                                                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" percentWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml b/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml
-index eafc001..7e490c1 100644
+index eafc0011b9..7e490c1628 100644
 --- a/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/OperatorAuthentication.fxml
 @@ -1,6 +1,7 @@
@@ -1784,7 +2121,7 @@ index eafc001..7e490c1 100644
  															<columnConstraints>
  																<ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
 diff --git a/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml b/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml
-index 2ba0e89..b6464c1 100644
+index 2ba0e89d01..b6464c10dc 100644
 --- a/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml
 +++ b/registration/registration-client/src/main/resources/fxml/RegistrationLogin.fxml
 @@ -1,6 +1,7 @@
@@ -1806,10 +2143,10 @@ index 2ba0e89..b6464c1 100644
            </children>
 diff --git a/registration/registration-client/src/test/java/io/mosip/registration/controller/device/FaceLivenessGuardTest.java b/registration/registration-client/src/test/java/io/mosip/registration/controller/device/FaceLivenessGuardTest.java
 new file mode 100644
-index 0000000..0d83739
+index 0000000000..997637d8b0
 --- /dev/null
 +++ b/registration/registration-client/src/test/java/io/mosip/registration/controller/device/FaceLivenessGuardTest.java
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,617 @@
 +package io.mosip.registration.controller.device;
 +
 +import static org.junit.Assert.assertEquals;
@@ -2037,6 +2374,7 @@ index 0000000..0d83739
 +		FaceLivenessGuard.Verdict verdict = guard.verify(LivenessWorkflow.RESIDENT_REGISTRATION, null, null, "app1");
 +		assertFalse(verdict.isAllowed());
 +		assertEquals(Arrays.asList(AuditEvent.REG_FACE_LIVENESS_ENGINE_ERROR), audit.events);
++		assertFalse("a configuration fault is not a failed capture attempt", verdict.isFailedSession());
 +	}
 +
 +	// ------------------------------------------------------------------ engine errors
@@ -2051,6 +2389,7 @@ index 0000000..0d83739
 +		assertEquals(LivenessOutcome.GENERIC_FAILURE_MESSAGE, verdict.getUserMessage());
 +		assertEquals(Arrays.asList(AuditEvent.REG_FACE_LIVENESS_ENGINE_ERROR), audit.events);
 +		assertEquals(Components.REG_OS_AUTH, audit.components.get(0));
++		assertFalse("an engine error is not a failed capture attempt", verdict.isFailedSession());
 +	}
 +
 +	@Test
@@ -2060,6 +2399,7 @@ index 0000000..0d83739
 +		FaceLivenessGuard.Verdict verdict = guard.verify(LivenessWorkflow.SUPERVISOR_AUTHENTICATION, null, null, "s1");
 +		assertTrue(verdict.isAllowed());
 +		assertEquals(LivenessOutcome.Status.ENGINE_ERROR, verdict.getOutcome().getStatus());
++		assertFalse("allowed by policy, but nobody was verified", verdict.isVerified());
 +	}
 +
 +	@Test
@@ -2126,6 +2466,7 @@ index 0000000..0d83739
 +		assertFalse(verdict.isAllowed());
 +		assertTrue(verdict.isDeviceError());
 +		assertNull(verdict.getOutcome());
++		assertFalse("a device error is not a failed capture attempt", verdict.isFailedSession());
 +		assertEquals(message, verdict.getUserMessage());
 +		assertEquals(Arrays.asList(AuditEvent.REG_FACE_LIVENESS_DEVICE_ERROR), audit.events);
 +		assertEquals(1L, guard.getMetrics().get("RESIDENT_REGISTRATION").get("device_errors"));
@@ -2245,27 +2586,146 @@ index 0000000..0d83739
 +	@Test
 +	public void repeatedFailuresBlockFurtherAttemptsForThatSubjectOnly() throws Exception {
 +		needsServices();
-+		set("resident.passive.threshold", "0.99");
-+		set("resident.active.enable", "N");                  // every session fails deterministically
-+		set("resident.repeated.failure.max.sessions", "2");
++		// operator / supervisor have no MOSIP attempt counter, so the guard's own repeated-failure policy applies
++		set("operator.passive.threshold", "0.99");
++		set("operator.active.enable", "N");                  // every session fails deterministically
++		set("operator.repeated.failure.max.sessions", "2");
 +		streamFromMockMds();
 +		for (int i = 0; i < 2; i++) {
-+			FaceLivenessGuard.Verdict v = guard.verify(LivenessWorkflow.RESIDENT_REGISTRATION, null, null, "app3");
++			FaceLivenessGuard.Verdict v = guard.verify(LivenessWorkflow.OPERATOR_AUTHENTICATION, null, null, "op3");
 +			assertFalse(v.isAllowed());
 +			assertFalse(v.isBlocked());
 +		}
-+		FaceLivenessGuard.Verdict blocked = guard.verify(LivenessWorkflow.RESIDENT_REGISTRATION, null, null, "app3");
++		FaceLivenessGuard.Verdict blocked = guard.verify(LivenessWorkflow.OPERATOR_AUTHENTICATION, null, null, "op3");
 +		assertTrue(blocked.isBlocked());
 +		assertNull("no session was run", blocked.getOutcome());
 +		assertTrue(blocked.getUserMessage().contains("recovery process"));
 +		assertEquals(AuditEvent.REG_FACE_LIVENESS_BLOCKED, audit.events.get(audit.events.size() - 1));
 +
-+		FaceLivenessGuard.Verdict other = guard.verify(LivenessWorkflow.RESIDENT_REGISTRATION, null, null, "app4");
-+		assertFalse("another registration is not blocked", other.isBlocked());
++		FaceLivenessGuard.Verdict other = guard.verify(LivenessWorkflow.OPERATOR_AUTHENTICATION, null, null, "op4");
++		assertFalse("another user is not blocked", other.isBlocked());
 +
-+		set("resident.repeated.failure.action", "CONTINUE");
-+		assertFalse(guard.verify(LivenessWorkflow.RESIDENT_REGISTRATION, null, null, "app3").isBlocked());
-+		assertEquals(1L, guard.getMetrics().get("RESIDENT_REGISTRATION").get("blocked_after_repeated_failures"));
++		set("operator.repeated.failure.action", "CONTINUE");
++		assertFalse(guard.verify(LivenessWorkflow.OPERATOR_AUTHENTICATION, null, null, "op3").isBlocked());
++		assertEquals(1L, guard.getMetrics().get("OPERATOR_AUTHENTICATION").get("blocked_after_repeated_failures"));
++	}
++
++	@Test
++	public void residentFailuresAreMosipAttemptsAndNeverBlockedByTheGuard() throws Exception {
++		needsServices();
++		set("resident.passive.threshold", "0.99");
++		set("resident.active.enable", "N");                  // every session fails deterministically
++		set("resident.repeated.failure.max.sessions", "1");  // would block after one failure if it applied
++		streamFromMockMds();
++		for (int i = 0; i < 3; i++) {
++			FaceLivenessGuard.Verdict v = guard.verify(LivenessWorkflow.RESIDENT_REGISTRATION, null, null, "app3");
++			assertFalse(v.isAllowed());
++			assertFalse("the biometrics screen limits resident attempts (num_of_face_retries)", v.isBlocked());
++			assertTrue("each failed session is one capture attempt", v.isFailedSession());
++			assertFalse(v.isVerified());
++		}
++	}
++
++	@Test
++	public void onlyAFailedSessionCountsAsACaptureAttempt() {
++		FaceLivenessGuard.Verdict failed = guard.decide(LivenessWorkflow.RESIDENT_REGISTRATION, null, "app5");
++		assertTrue("a session that produced no pass counts", failed.isFailedSession());
++		assertFalse(failed.isVerified());
++		assertFalse("liveness switched off", new FaceLivenessGuard.Verdict(true, true, false, null, null).isFailedSession());
++		assertFalse("liveness switched off", new FaceLivenessGuard.Verdict(true, true, false, null, null).isVerified());
++		assertFalse("refused without a session", new FaceLivenessGuard.Verdict(false, false, true, "m", null).isFailedSession());
++		assertFalse("device error", new FaceLivenessGuard.Verdict(false, false, false, "m", null, true).isFailedSession());
++		assertFalse("engine / configuration fault",
++				new FaceLivenessGuard.Verdict(false, false, false, "m", null, false, true).isFailedSession());
++
++		assertTrue(new FaceLivenessGuard.LivenessRejectedException("m", true).countsAsAttempt());
++		assertFalse(new FaceLivenessGuard.LivenessRejectedException("m", false).countsAsAttempt());
++		assertFalse(new FaceLivenessGuard.LivenessRejectedException("m").countsAsAttempt());
++	}
++
++	@Test
++	public void onlyResidentAttemptsAreManagedByMosip() {
++		assertTrue(FaceLivenessGuard.mosipManagesAttempts(LivenessWorkflow.RESIDENT_REGISTRATION));
++		assertFalse(FaceLivenessGuard.mosipManagesAttempts(LivenessWorkflow.OPERATOR_AUTHENTICATION));
++		assertFalse(FaceLivenessGuard.mosipManagesAttempts(LivenessWorkflow.SUPERVISOR_AUTHENTICATION));
++	}
++
++	@Test
++	public void verifiedCapturesAreRememberedPerRegistrationFieldAndAttempt() {
++		assertFalse(guard.isVerified("app6", "individualBiometrics", 1));
++		guard.markVerified("app6", "individualBiometrics", 2);
++		assertTrue(guard.isVerified("app6", "individualBiometrics", 2));
++		assertFalse("another attempt", guard.isVerified("app6", "individualBiometrics", 1));
++		assertFalse("another field", guard.isVerified("app6", "guardianBiometrics", 2));
++		assertFalse("another registration", guard.isVerified("app7", "individualBiometrics", 2));
++	}
++
++	// ------------------------------------------------------------------ overlay
++
++	@Test
++	public void overlayHoldsAPassedResultUntilTheSessionIsEnded() throws Exception {
++		LivenessOverlayPane overlay = onFx(LivenessOverlayPane::new);
++		assertFalse("nothing is shown before a session", onFx(overlay::isSessionShown));
++		onFx(() -> {
++			overlay.setHoldOnSuccess(true);
++			overlay.finish("", true);
++			return null;
++		});
++		assertTrue(onFx(overlay::isSessionShown));
++		assertTrue("a passed result says so, with a tick",
++				onFx(overlay::getStatusText).contains(LivenessOverlayPane.VERIFIED_TEXT));
++		onFx(() -> {
++			overlay.endSession();
++			return null;
++		});
++		assertFalse(onFx(overlay::isSessionShown));
++	}
++
++	@Test
++	public void overlayShowsAFailedResultWithACross() throws Exception {
++		LivenessOverlayPane overlay = onFx(LivenessOverlayPane::new);
++		onFx(() -> {
++			overlay.finish("Face could not be verified.", false);
++			return null;
++		});
++		assertTrue(onFx(overlay::isSessionShown));
++		assertTrue(onFx(overlay::getStatusText).contains("Face could not be verified."));
++	}
++
++	@Test
++	public void overlayVerifiedBadgeIsIndependentOfTheSession() throws Exception {
++		LivenessOverlayPane overlay = onFx(LivenessOverlayPane::new);
++		assertFalse(onFx(overlay::isVerifiedShown));
++		onFx(() -> {
++			overlay.showVerified(true);
++			overlay.start("Checking");
++			overlay.endSession();
++			return null;
++		});
++		assertTrue("ending the session leaves the badge", onFx(overlay::isVerifiedShown));
++		onFx(() -> {
++			overlay.showVerified(false);
++			return null;
++		});
++		assertFalse(onFx(overlay::isVerifiedShown));
++		onFx(() -> {
++			overlay.showVerified(true);
++			overlay.hide();
++			return null;
++		});
++		assertFalse("hide() clears everything", onFx(overlay::isVerifiedShown));
++	}
++
++	@Test
++	public void aNewSessionIsNotHiddenByThePreviousResultsTimer() throws Exception {
++		LivenessOverlayPane overlay = onFx(LivenessOverlayPane::new);
++		onFx(() -> {
++			overlay.finish("Face verified", true);   // arms the 1.5 s hide timer
++			overlay.start("Checking face liveness");
++			return null;
++		});
++		Thread.sleep(2200);
++		assertTrue("the new session is still on screen", onFx(overlay::isSessionShown));
 +	}
 +
 +	@Test
@@ -2305,7 +2765,7 @@ index 0000000..0d83739
 +	}
 +}
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java
-index dadc2e7..01f05e2 100644
+index dadc2e73ad..01f05e2836 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/audit/AuditManagerSerivceImpl.java
 @@ -57,6 +57,11 @@ public class AuditManagerSerivceImpl extends BaseService implements AuditManager
@@ -2321,7 +2781,7 @@ index dadc2e7..01f05e2 100644
  		if (auditEventEnum.getId().contains(RegistrationConstants.REGISTRATION_EVENTS)
  				&& getRegistrationDTOFromSession() != null
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java b/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java
-index 937d040..bc4b2c1 100644
+index 937d040a90..bc4b2c18e7 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/constants/AuditEvent.java
 @@ -312,6 +312,19 @@ public enum AuditEvent {
@@ -2345,7 +2805,7 @@ index 937d040..bc4b2c1 100644
  	CLIENT_UPGRADE_JARS_DOWNLOADED("REG-UPG-001", USER_EVENT.getCode(), "CLIENT_UPGRADE_JARS_DOWNLOADED",
  			"Client Upgrade: Successfully downloaded all the upgrade jars"),
 diff --git a/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java b/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java
-index 4048805..cf1e811 100644
+index 40488055f0..cf1e811c23 100644
 --- a/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java
 +++ b/registration/registration-services/src/main/java/io/mosip/registration/jobs/impl/SyncManagerImpl.java
 @@ -121,7 +121,10 @@ public class SyncManagerImpl extends BaseService implements SyncManager {
