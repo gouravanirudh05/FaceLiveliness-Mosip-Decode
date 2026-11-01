@@ -8,8 +8,6 @@
 | [mosip/](mosip/README.md) | MOSIP integration: Desktop and Android Registration Clients + MockMDS (git submodules), patches, scripts, tools |
 | [command.md](command.md) | Commands to set up, run and test the MOSIP integration |
 | [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) | Technical design (architecture, flows, configuration, interfaces, security, ISO/IEC 30107) |
-| [docs/MOSIP_Liveness_Tracker.xlsx](docs/MOSIP_Liveness_Tracker.xlsx) | Team tracker: open tasks to claim, and the status of every line of the problem statement |
-| [browser.py](browser.py) | Browser based webcam demo client for all three modes |
 
 How to get started with browser.py:
 ```bash
@@ -64,3 +62,7 @@ cd /home/gourav-anirudh/Desktop/Mosip/FaceLiveliness-Mosip-Decode/mosip && expor
 25864920831241
 
 cd /home/mrtechtroid/mosip/FaceLiveliness-Mosip-Decode/mosip/ && (cd registration-client/registration && mvn clean install -Dgpg.skip=true -DskipTests=true -Dmaven.javadoc.skip=true) && scripts/start-services.sh && (nohup scripts/run-webcam-device.sh > ../.run/webcam.log 2>&1 &) && cd registration-client/registration/registration-client && cp target/registration-client-1.2.0.2.jar target/lib/ && cd target/lib && wget -nc https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-1.2.0.2.jar && mkdir -p lib && cp ../../../lib/logback.xml lib/ && java --module-path ../../../../../../extras/javafx-sdk-11.0.2/lib/ --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED -Dmosip.mock.backend=true -Dprism.verbose=true -cp "*" io.mosip.registration.controller.Initialization
+
+
+
+cd /home/mrtechtroid/mosip/FaceLiveliness-Mosip-Decode/mosip/ && (cd registration-client/registration && mvn clean install -Dgpg.skip=true -DskipTests=true -Dmaven.javadoc.skip=true) && cd registration-client/registration/registration-client && cp target/registration-client-1.2.0.2.jar target/lib/ && cd target/lib && wget -nc https://repo1.maven.org/maven2/io/mosip/mock/sdk/mock-sdk/1.2.0.2/mock-sdk-1.2.0.2.jar && mkdir -p lib && cp ../../../lib/logback.xml lib/ && java --module-path ../../../../../../extras/javafx-sdk-11.0.2/lib/ --add-modules=javafx.controls,javafx.fxml,javafx.base,javafx.web,javafx.swing,javafx.graphics --add-exports javafx.graphics/com.sun.javafx.application=ALL-UNNAMED -Dmosip.mock.backend=true -Dprism.verbose=true -cp "*" io.mosip.registration.controller.Initialization
