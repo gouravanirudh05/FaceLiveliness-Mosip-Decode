@@ -1,5 +1,5 @@
 diff --git a/android/app/build.gradle b/android/app/build.gradle
-index 6ef5f8e..794e234 100644
+index 6ef5f8e7..794e2345 100644
 --- a/android/app/build.gradle
 +++ b/android/app/build.gradle
 @@ -77,6 +77,8 @@ android {
@@ -12,7 +12,7 @@ index 6ef5f8e..794e234 100644
  
      signingConfigs {
 diff --git a/android/build.gradle b/android/build.gradle
-index 861964d..f989099 100644
+index 861964d6..f9890997 100644
 --- a/android/build.gradle
 +++ b/android/build.gradle
 @@ -66,6 +66,10 @@ ext {
@@ -27,7 +27,7 @@ index 861964d..f989099 100644
  
      // Dependency Injection
 diff --git a/android/clientmanager/build.gradle b/android/clientmanager/build.gradle
-index 0ffefa1..9f324dc 100644
+index 0ffefa17..9f324dc1 100644
 --- a/android/clientmanager/build.gradle
 +++ b/android/clientmanager/build.gradle
 @@ -124,6 +124,7 @@ android {
@@ -50,7 +50,7 @@ index 0ffefa1..9f324dc 100644
          }
      }
 diff --git a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/config/NetworkModule.java b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/config/NetworkModule.java
-index 25db6f1..d8230fa 100644
+index 25db6f17..d8230fa9 100644
 --- a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/config/NetworkModule.java
 +++ b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/config/NetworkModule.java
 @@ -9,6 +9,8 @@ import dagger.Module;
@@ -79,8 +79,8 @@ index 25db6f1..d8230fa 100644
  
          long cachedReadTimeout = globalParamRepository.getCachedReadTimeout();
 diff --git a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/interceptor/MockBackendInterceptor.java b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/interceptor/MockBackendInterceptor.java
-new file mode 100755
-index 0000000..b0fb3bf
+new file mode 100644
+index 00000000..b0fb3bf3
 --- /dev/null
 +++ b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/interceptor/MockBackendInterceptor.java
 @@ -0,0 +1,330 @@
@@ -415,7 +415,7 @@ index 0000000..b0fb3bf
 +    }
 +}
 diff --git a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/service/Biometrics095Service.java b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/service/Biometrics095Service.java
-index bd9f78a..3e1f8bf 100644
+index bd9f78ab..3e1f8bf1 100644
 --- a/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/service/Biometrics095Service.java
 +++ b/android/clientmanager/src/main/java/io/mosip/registration/clientmanager/service/Biometrics095Service.java
 @@ -445,7 +445,9 @@ public class Biometrics095Service extends BiometricsService {
@@ -430,8 +430,8 @@ index bd9f78a..3e1f8bf 100644
          jwtSignatureVerifyRequestDto.setJwtSignatureData(signedData);
  
 diff --git a/android/clientmanager/src/mockBackend/assets/mock-backend/mock-applicanttype.mvel b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-applicanttype.mvel
-new file mode 100755
-index 0000000..69da629
+new file mode 100644
+index 00000000..69da629d
 --- /dev/null
 +++ b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-applicanttype.mvel
 @@ -0,0 +1,192 @@
@@ -628,8 +628,8 @@ index 0000000..69da629
 +  return "000";
 +}
 diff --git a/android/clientmanager/src/mockBackend/assets/mock-backend/mock-certificate.pem b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-certificate.pem
-new file mode 100755
-index 0000000..be650be
+new file mode 100644
+index 00000000..be650be1
 --- /dev/null
 +++ b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-certificate.pem
 @@ -0,0 +1,21 @@
@@ -655,11 +655,11 @@ index 0000000..be650be
 +mUrrehyi1FmZxI6EghOqhq4tSu3igAuozw==
 +-----END CERTIFICATE-----
 diff --git a/android/clientmanager/src/mockBackend/assets/mock-backend/mock-global-config.properties b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-global-config.properties
-new file mode 100755
-index 0000000..8930840
+new file mode 100644
+index 00000000..029a9556
 --- /dev/null
 +++ b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-global-config.properties
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,170 @@
 +# MOCK BACKEND client configuration (what the server's /v1/syncdata/configs would push).
 +# Base: the desktop mock-backend's mock-global-config.properties; Android-specific keys below use MOSIP's
 +# mosip-config release-1.2.0 defaults (languages limited to the sample UI spec's eng + fra).
@@ -823,9 +823,16 @@ index 0000000..8930840
 +# Face liveness on the phone: eye-gaze challenges and nod need the head held within a few degrees, which a handheld
 +# phone rarely manages, so only the clearly visible actions are asked for.
 +mosip.registration.face.liveness.active.challenge.types=BLINK,SMILE,OPEN_MOUTH,TURN_LEFT,TURN_RIGHT,LOOK_UP,LOOK_DOWN
++# Passive liveness on the phone: both models run on the CPU (about 1-2 s per frame), so fewer frames and more time
++# than the engine defaults (5 frames in 10 s), and a lower accept threshold (default 0.80), so a live face usually
++# passes on the passive check alone. Demo values: a lower threshold also lets more attacks through.
++mosip.registration.face.liveness.passive.frames.required=3
++mosip.registration.face.liveness.passive.max.duration.ms=20000
++mosip.registration.face.liveness.passive.threshold=0.55
++mosip.registration.face.liveness.passive.reject.threshold=0.25
 diff --git a/android/clientmanager/src/mockBackend/assets/mock-backend/mock-id-schema.json b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-id-schema.json
-new file mode 100755
-index 0000000..25096e9
+new file mode 100644
+index 00000000..25096e90
 --- /dev/null
 +++ b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-id-schema.json
 @@ -0,0 +1,5079 @@
@@ -5909,8 +5916,8 @@ index 0000000..25096e9
 + "status": "PUBLISHED"
 +}
 diff --git a/android/clientmanager/src/mockBackend/assets/mock-backend/mock-master-data.json b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-master-data.json
-new file mode 100755
-index 0000000..fae29e8
+new file mode 100644
+index 00000000..fae29e8b
 --- /dev/null
 +++ b/android/clientmanager/src/mockBackend/assets/mock-backend/mock-master-data.json
 @@ -0,0 +1,2792 @@
@@ -8707,7 +8714,7 @@ index 0000000..fae29e8
 + }
 +]
 diff --git a/android/clientmanager/src/test/java/io/mosip/registration/clientmanager/config/NetworkModuleTest.java b/android/clientmanager/src/test/java/io/mosip/registration/clientmanager/config/NetworkModuleTest.java
-index b36420a..7ce578a 100644
+index b36420ad..7ce578a0 100644
 --- a/android/clientmanager/src/test/java/io/mosip/registration/clientmanager/config/NetworkModuleTest.java
 +++ b/android/clientmanager/src/test/java/io/mosip/registration/clientmanager/config/NetworkModuleTest.java
 @@ -8,6 +8,7 @@ import com.google.gson.Gson;
@@ -8756,7 +8763,7 @@ index b36420a..7ce578a 100644
          SyncRestService service = networkModule.provideSyncRestService(retrofit);
          assertNotNull(service);
 diff --git a/lib/platform_android/network_service_impl.dart b/lib/platform_android/network_service_impl.dart
-index cf8f41a..c3a48f7 100644
+index cf8f41a1..c3a48f7f 100644
 --- a/lib/platform_android/network_service_impl.dart
 +++ b/lib/platform_android/network_service_impl.dart
 @@ -16,8 +16,17 @@ import 'package:registration_client/platform_spi/network_service.dart';

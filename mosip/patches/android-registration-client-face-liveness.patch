@@ -44,7 +44,7 @@ index 27a9833b5a28d5267375df1ce04c228eaabacdbd..f35ba842454e26b10948634769cb1897
              switch (requestCode) {
                  case 1:
 diff --git a/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java b/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java
-index 640ac6611c4d9959742c108b5e281ab1625eb2ea..b8e8a61e79cdb059e4ee880c1c3dec004dd5c375 100644
+index 640ac6611c4d9959742c108b5e281ab1625eb2ea..9c29f37e170231225c736e72477bf9cceb76b3c7 100644
 --- a/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java
 +++ b/android/app/src/main/java/io/mosip/registration_client/api_services/BiometricsDetailsApi.java
 @@ -18,6 +18,9 @@ import android.widget.Toast;
@@ -69,7 +69,7 @@ index 640ac6611c4d9959742c108b5e281ab1625eb2ea..b8e8a61e79cdb059e4ee880c1c3dec00
  
  
  
-@@ -136,8 +144,115 @@ public class BiometricsDetailsApi implements BiometricsPigeon.BiometricsApi {
+@@ -136,8 +144,118 @@ public class BiometricsDetailsApi implements BiometricsPigeon.BiometricsApi {
          auditManagerService.audit(AuditEvent.BIOMETRIC_CAPTURE, Components.REGISTRATION);
          currentModality = getModality(modality);
          this.fieldId = fieldId;
@@ -120,6 +120,9 @@ index 640ac6611c4d9959742c108b5e281ab1625eb2ea..b8e8a61e79cdb059e4ee880c1c3dec00
 +        intent.putExtra(LivenessContract.EXTRA_WORKFLOW, wf);
 +        putDouble(intent, LivenessContract.EXTRA_ACCEPT, livenessParam(wf, "passive.threshold"));
 +        putDouble(intent, LivenessContract.EXTRA_REJECT, livenessParam(wf, "passive.reject.threshold"));
++        putInt(intent, LivenessContract.EXTRA_FRAMES_REQUIRED, livenessParam(wf, "passive.frames.required"));
++        String maxDuration = livenessParam(wf, "passive.max.duration.ms");
++        if (maxDuration != null) intent.putExtra(LivenessContract.EXTRA_MAX_DURATION_MS, Long.parseLong(maxDuration));
 +        String noResponse = livenessParam(wf, "passive.no.response.action");
 +        if (noResponse != null) intent.putExtra(LivenessContract.EXTRA_FAIL_NO_RESPONSE, "FAIL".equalsIgnoreCase(noResponse));
 +        String activeEnable = livenessParam(wf, "active.enable");
@@ -1712,10 +1715,10 @@ index 0000000000000000000000000000000000000000..2c0998bd8da2a9e6200f6131d9dc4760
 +}
 diff --git a/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessContract.java b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessContract.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..473974630454f031dc512e18c12c21ecd8b417d4
+index 0000000000000000000000000000000000000000..9252f06a19cbbe24f7b70c82a5cafa166d043480
 --- /dev/null
 +++ b/android/livenessmanager/src/main/java/io/mosip/registration/livenessmanager/android/LivenessContract.java
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,90 @@
 +package io.mosip.registration.livenessmanager.android;
 +
 +import android.app.Activity;
@@ -1739,6 +1742,8 @@ index 0000000000000000000000000000000000000000..473974630454f031dc512e18c12c21ec
 +    public static final String EXTRA_ACCEPT = "liveness.passive.threshold";
 +    public static final String EXTRA_REJECT = "liveness.passive.reject.threshold";
 +    public static final String EXTRA_FAIL_NO_RESPONSE = "liveness.passive.fail.no.response";
++    public static final String EXTRA_FRAMES_REQUIRED = "liveness.passive.frames.required";
++    public static final String EXTRA_MAX_DURATION_MS = "liveness.passive.max.duration.ms";
 +    public static final String EXTRA_ACTIVE_ENABLED = "liveness.active.enable";
 +    public static final String EXTRA_MIN_CHALLENGES = "liveness.active.min.challenges";
 +    public static final String EXTRA_CHALLENGE_TYPES = "liveness.active.challenge.types";   // comma list
@@ -1768,6 +1773,11 @@ index 0000000000000000000000000000000000000000..473974630454f031dc512e18c12c21ec
 +        if (s.passive.rejectThreshold > s.passive.acceptThreshold || s.passive.acceptThreshold > 1
 +                || s.passive.rejectThreshold < 0) {
 +            throw new IllegalArgumentException("thresholds must satisfy 0 <= reject <= accept <= 1");
++        }
++        if (in.hasExtra(EXTRA_FRAMES_REQUIRED)) s.passive.framesRequired = in.getIntExtra(EXTRA_FRAMES_REQUIRED, s.passive.framesRequired);
++        if (in.hasExtra(EXTRA_MAX_DURATION_MS)) s.passive.maxDurationMs = in.getLongExtra(EXTRA_MAX_DURATION_MS, s.passive.maxDurationMs);
++        if (s.passive.framesRequired < 1 || s.passive.maxDurationMs <= 0) {
++            throw new IllegalArgumentException("passive frames required must be >= 1 and max duration > 0");
 +        }
 +        if (in.hasExtra(EXTRA_FAIL_NO_RESPONSE)) s.failOnPassiveNoResponse = in.getBooleanExtra(EXTRA_FAIL_NO_RESPONSE, false);
 +        s.active.withOverrides(
