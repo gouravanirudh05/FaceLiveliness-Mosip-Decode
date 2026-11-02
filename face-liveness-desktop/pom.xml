@@ -21,11 +21,7 @@
 
     <modules>
         <module>liveness-api</module>
-        <module>liveness-core</module>
         <module>liveness-grpc-client</module>
-        <module>mds-adapter</module>
-        <module>desktop-companion-ui</module>
-        <module>distribution</module>
     </modules>
 
     <build>
