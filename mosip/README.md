@@ -12,9 +12,7 @@ Clients. Liveness and PAD run before the face is captured, and the capture proce
 
 | Document | |
 |---|---|
-| [../command.md](../command.md) | Setup, running, tests, builds |
 | [../docs/TECHNICAL_DESIGN.md](../docs/TECHNICAL_DESIGN.md) | Architecture, flows, configuration, interfaces, error handling, security, ISO/IEC 30107 |
-| [../docs/MOSIP_Liveness_Tracker.xlsx](../docs/MOSIP_Liveness_Tracker.xlsx) | Open tasks (T01–T31) and the status of every line of the problem statement |
 
 ## Layout
 

@@ -94,7 +94,8 @@ nohup scripts/run-webcam-device.sh > .run/webcam.log 2>&1 &
 To run manually:
 ```bash
 # To be run from <REPO_ROOT>/mosip/
-python3 webcam_server.py
+python3 mockmds_webcam_feeder.py
+# python3 webcam_server.py # use this incase, you are using WSL and dont have access to real camera drivers.
 ```
 
 ## 6. Prepare the registration client JAR

@@ -12,3 +12,4 @@ Face liveness detection for the MOSIP Registration Client. By Team DeLeetCode
 | `mosip/` | MOSIP integration: Desktop and Android Registration Clients and MockMDS (git submodules), patches, scripts and tools. |
 | `docs/TECHNICAL_DESIGN.md` | Architecture, flows, configuration, interfaces, security and ISO/IEC 30107 notes. |
 | `docs/DESKTOP_REGISTRATION_SETUP.md` | Instructions for setting up the Desktop Registration Client (for Linux and Windows) |
+| `docs/ANDROID_SETUP.md` | Instructions for setting up the Android Registration Client |

@@ -22,7 +22,7 @@ MDS_PORT="${MDS_PORT:-4501}"
 MDS_PURPOSE="${MDS_PURPOSE:-Registration}"
 
 # Project directories.
-MOCKMDS_DIR="${MOCKMDS_DIR:-$REPO/mosip/mock-mds}"
+MOCKMDS_DIR="${MOCKMDS_DIR:-$REPO/mosip/mosip-mock-services/MockMDS/}"
 
 mkdir -p "$RUN_DIR"
 
