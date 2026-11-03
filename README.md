@@ -1,6 +1,6 @@
 # Face Liveness and PAD for MOSIP Registration Clients
 
-**Team DeLeetCode, IIIT Bangalore** · MOSIP Decode hackathon · Problem statement 04: *Face Liveness Detection and
+**Team DeLeetCode, IIIT Bangalore** · MOSIP Decode 2026 Hackathon · Problem statement 04: *Face Liveness Detection and
 Presentation Attack Detection for Registration and Biometric Authentication*
 
 > A printed photo, a replayed video or a deepfake should never become someone's registered face.
@@ -18,7 +18,7 @@ all end up in a registration packet, an operator login or a supervisor approval.
 
 We put a liveness gate in front of the capture. The client already streams video from the face device for the
 preview. We tap that same stream and send the frames to a liveness engine running on the same machine. Only when
-the person is verified as live does the client ask the device for the real capture.
+the person is verified as live does the client ask the device for the real capture. Full technical design [here].(docs/TECHNICAL_DESIGN.md)
 
 ```mermaid
 flowchart LR
@@ -56,7 +56,6 @@ flowchart LR
   engine-failure policy.
 - **Secure by default:** if the engine fails or the config is invalid, capture is denied and audited. It never
   silently lets a face through.
-- **ISO/IEC 30107 aligned:** APCER/BPCER evaluation tooling, DET curves and conformance notes.
 
 ## Tech stack
 
@@ -71,17 +70,9 @@ flowchart LR
 
 ## Quick start
 
-### Desktop demo (Linux)
+### Desktop demo (Linux & Windows)
 
-```bash
-git clone --recurse-submodules <repo-url> FaceLiveliness-Mosip-Decode
-cd FaceLiveliness-Mosip-Decode
-mosip/scripts/run-demo.sh
-```
-
-This starts the liveness engine, MockMDS, the webcam feeder and the Desktop Registration Client. The first run
-applies our patches and builds the client, which takes a few minutes. You need JDK 11, Maven, Python 3.12 and a
-webcam. Full steps for Linux and Windows are in the [Desktop setup guide](docs/DESKTOP_REGISTRATION_SETUP.md).
+Full steps for Linux and Windows are in the [Desktop setup guide](docs/DESKTOP_REGISTRATION_SETUP.md).
 
 ### Android
 
@@ -138,13 +129,4 @@ Tested (details in [Technical design §14](docs/TECHNICAL_DESIGN.md#14-verificat
 | Java client library | 16 |
 | Desktop integration (real MOSIP classes, real engine, MockMDS) | 25 |
 | Android engine parity | 17 |
-
-Not done yet, stated honestly:
-
-- Not run against a real MOSIP server (the full deployment needs about 192 GB RAM). The desktop client was tested
-  on a mock backend.
-- Android was not yet verified on a device or emulator in the test suite.
-- No measured APCER/BPCER on a licensed PAD dataset captured on the target devices. The evaluation tooling is
-  ready.
-- Head-pose challenges alone cannot stop a physically tilted printed photo. The passive PAD covers that case.
 
