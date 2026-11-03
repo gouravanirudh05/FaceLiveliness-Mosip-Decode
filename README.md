@@ -18,7 +18,7 @@ all end up in a registration packet, an operator login or a supervisor approval.
 
 We put a liveness gate in front of the capture. The client already streams video from the face device for the
 preview. We tap that same stream and send the frames to a liveness engine running on the same machine. Only when
-the person is verified as live does the client ask the device for the real capture. Full technical design [here].(docs/TECHNICAL_DESIGN.md)
+the person is verified as live does the client ask the device for the real capture. Full technical design [here](docs/TECHNICAL_DESIGN.md).
 
 ```mermaid
 flowchart LR
